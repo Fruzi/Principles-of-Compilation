@@ -3,16 +3,16 @@
 (define <boolean>
   (new
    (*parser (char #\#))
+
    (*parser (char-ci #\t))
-   (*caten 2)
-   (*pack (lambda (_) #t))
-
-   (*parser (char #\#))
    (*parser (char-ci #\f))
-   (*caten 2)
-   (*pack (lambda (_) #f))
-
    (*disj 2)
+
+   (*caten 2)
+   (*delayed (lambda () <symbol>))
+   *not-followed-by
+   (*pack-with (lambda (sh b)
+                 (char-ci=? b #\t) ))
    done))
 
 (define <charprefix>
@@ -24,7 +24,7 @@
 
 (define <visiblesimplechar>
   (const (lambda (c)
-	   (char>? c #\space))))
+           (char>? c #\space))))
 
 (define <whitespace>
   (new
@@ -136,7 +136,8 @@
    *plus
 
    (*caten 2)
-   (*pack-with (lambda (x c) (integer->char (string->number (list->string c) 16))))
+   (*pack-with (lambda (x c)
+                 (integer->char (string->number (list->string c) 16))))
    done))
 
 (define <char>
@@ -169,9 +170,9 @@
 
    (*caten 2)
    (*pack-with (lambda (sign num)
-			 (if (car sign)
-			      (cons (cadr sign) num)
-			      num)))
+                 (if (car sign)
+                     `(,@(cdr sign) ,@num)
+                     num)))
    done))
 
 (define <fraction>
@@ -180,8 +181,7 @@
    (*parser (char #\/))
    (*parser <natural>)
    (*caten 3)
-   (*pack-with (lambda (int / nat)
-		 `(,@int ,/ ,@nat)))
+   (*pack-with (lambda (int / nat) `(,@int ,/ ,@nat)))
    done))
 
 (define <number>
@@ -189,15 +189,16 @@
    (*parser <fraction>)
    (*parser <integer>)
    (*disj 2)
-   (*pack (lambda (n) (string->number (list->string n))))
+   (*pack (lambda (n)
+            (string->number (list->string n))))
    done))
 
 (define <stringliteralchar>
   (new
    (*parser <any>)
    (*only-if (lambda (c)
-	       (not (or (char=? c #\\)
-			(char=? c #\")))))
+	             (not (or (char=? c #\\)
+			                  (char=? c #\")))))
    done))
 
 (define <stringmetachar>
@@ -250,40 +251,31 @@
 
    (*caten 3)
    (*pack-with (lambda (fdq str sdq)
-		 (list->string str)))
+		             (list->string str)))
    done))
 
 (define <symbolchar>
   (new
    (*parser (range #\0 #\9))
    (*parser (range-ci #\a #\z))
-   (*parser (char #\!))
-   (*parser (char #\$))
-   (*parser (char #\^))
-   (*parser (char #\*))
-   (*parser (char #\-))
-   (*parser (char #\_))
-   (*parser (char #\=))
-   (*parser (char #\+))
-   (*parser (char #\<))
-   (*parser (char #\>))
-   (*parser (char #\?))
-   (*parser (char #\/))
-   (*disj 14)
+   (*parser (const (lambda (e)
+                     (member e '(#\! #\$ #\^ #\* #\- #\_ #\= #\+ #\< #\> #\? #\/)))))
+   (*disj 3)
    done))
 
 (define <symbol>
   (new
    (*parser <symbolchar>)
    *plus
-   (*pack (lambda (e) (string->symbol (list->string e))))
+   (*pack (lambda (e)
+            (string->symbol (list->string e))))
    done))
 
 (define <properlist>
   (new
    (*parser (char #\())
    
-   (*delayed (lambda ()  <sexpr>))
+   (*delayed (lambda () <sexpr>))
    *star
    
    (*parser (char #\)))
@@ -296,16 +288,15 @@
   (new
    (*parser (char #\())
 
-   (*delayed (lambda ()  <sexpr>))
+   (*delayed (lambda () <sexpr>))
    *plus
 
    (*parser (char #\.))
-   (*delayed (lambda ()  <sexpr>))
+   (*delayed (lambda () <sexpr>))
    (*parser (char #\)))
 
    (*caten 5)
-   (*pack-with (lambda (l ss d s r)
-		 `(,@ss . ,s)))
+   (*pack-with (lambda (l ss d s r) `(,@ss . ,s)))
    done))
 
 (define <vector>
@@ -319,7 +310,7 @@
 (define <quoted>
   (new
    (*parser (char #\'))
-   (*delayed (lambda ()  <sexpr>))
+   (*delayed (lambda () <sexpr>))
    (*caten 2)
    (*pack-with (lambda (q s) `',s))
    done))
@@ -330,13 +321,204 @@
 
 (define <unquoteandspliced> <fail>)
 
-(define <cbnamesyntax1> <fail>)
+(define <cbnamesyntax1>
+  (new
+   (*parser (char #\@))
+   (*delayed (lambda () <sexpr>))
+   (*caten 2)
+   (*pack-with (lambda (@ s) s))
+   done))
 
-(define <cbnamesyntax2> <fail>)
+(define <cbnamesyntax2>
+  (new
+   (*parser (char #\{))
+   (*delayed (lambda () <sexpr>))
+   (*parser (char #\}))
+   (*caten 3)
+   (*pack-with (lambda (lcb s rcb) s))
+   done))
 
-(define <cbname> <fail>)
+(define <cbname>
+  (new
+   (*parser <cbnamesyntax1>)
+   (*parser <cbnamesyntax2>)
+   (*disj 2)
+   (*pack (lambda (s) `(cbname ,s)))
+   done))
 
-(define <infixextension> <fail>)
+(define <infixprefixextensionprefix>
+  (new
+   (*parser (char #\#))
+
+   (*parser (char #\#))
+   (*parser (char #\%))
+   (*disj 2)
+
+   (*caten 2)
+   done))
+
+(define <infixadd>
+  (new
+   (*delayed (lambda () <infixexpression>))
+   (*parser (char #\+))
+   (*delayed (lambda () <infixexpression>))
+   (*caten 3)
+   done))
+
+(define <infixneg>
+  (new
+   (*parser (char #\-))
+   (*delayed (lambda () <infixexpression>))
+   (*caten 2)
+   done))
+
+(define <infixsub>
+  (new
+   (*delayed (lambda () <infixexpression>))
+   (*parser (char #\-))
+   (*delayed (lambda () <infixexpression>))
+   (*caten 3)
+   done))
+
+(define <infixmul>
+  (new
+   (*delayed (lambda () <infixexpression>))
+   (*parser (char #\*))
+   (*delayed (lambda () <infixexpression>))
+   (*caten 3)
+   done))
+
+(define <infixdiv>
+  (new
+   (*delayed (lambda () <infixexpression>))
+   (*parser (char #\/))
+   (*delayed (lambda () <infixexpression>))
+   (*caten 3)
+   done))
+
+(define <powersymbol>
+  (new
+   (*parser (char #\^))
+   
+   (*parser (char #\*))
+   (*times 2)
+
+   (*disj 2)
+   done))
+
+(define <infixpow>
+  (new
+   (*delayed (lambda () <infixexpression>))
+   (*parser <powersymbol>)
+   (*delayed (lambda () <infixexpression>))
+   (*caten 3)
+   done))
+
+(define <infixarrayget>
+  (new
+   (*delayed (lambda () <infixexpression>))
+   (*parser (char #\[))
+   (*delayed (lambda () <infixexpression>))
+   (*parser (char #\]))
+   (*caten 4)
+   done))
+
+(define <infixarglist>
+  (new
+   (*delayed (lambda () <infixexpression>))
+
+   (*parser (char #\,))
+   (*delayed (lambda () <infixexpression>))
+   (*caten 2)
+   *star
+
+   (*caten 2)
+
+   (*parser <epsilon>)
+   (*disj 2)
+   done))
+
+(define <infixfuncall>
+  (new
+   (*delayed (lambda () <infixexpression>))
+   (*parser (char #\())
+   (*parser <infixarglist>)
+   (*parser (char #\)))
+   (*caten 4)
+   done))
+
+
+(define <infixparen>
+  (new
+   (*parser (char #\())
+   (*delayed (lambda () <infixexpression>))
+   (*parser (char #\)))
+   (*caten 3)
+   done))
+
+(define <infixsexprescape>
+  (new
+   (*parser <infixprefixextensionprefix>)
+   (*delayed (lambda () <sexpr>))
+   (*caten 2)
+   done))
+
+(define <infixsymbolchar>
+  (new
+   (*parser <symbolchar>)
+
+   (*parser (const (lambda (e)
+                     (member e '(#\^ #\* #\- #\+ #\/)))))
+   (*parser (char #\*))
+   (*times 2)
+
+   (*disj 2)
+
+   *diff
+   done))
+
+(define <infixsymbol>
+  (new
+   (*parser <infixsymbolchar>)
+   *plus
+   (*pack (lambda (e)
+            (string->symbol (list->string e))))
+   done))
+
+(define <infixexpression>
+  (new
+   (*parser <whitespace>)
+   *star
+
+   (*parser <infixadd>)
+   (*parser <infixneg>)
+   (*parser <infixsub>)
+   (*parser <infixmul>)
+   (*parser <infixdiv>)
+   (*parser <infixpow>)
+   (*parser <infixarrayget>)
+   (*parser <infixfuncall>)
+   (*parser <infixparen>)
+   (*parser <infixsexprescape>)
+   (*parser <infixsymbol>)
+   (*parser <number>)
+   (*disj 12)
+
+   (*parser <whitespace>)
+   *star
+
+   (*caten 3)
+   (*pack-with (lambda (w1 ie w2) ie))
+
+   done))
+
+(define <infixextension>
+  (new
+   (*parser <infixprefixextensionprefix>)
+   (*parser <infixexpression>)
+   (*caten 2)
+   (*pack-with (lambda (pref epxr) expr))
+   done))
 
 (define <sexpr>
   (new
