@@ -490,6 +490,9 @@
    (*parser <whitespace>)
    *star
 
+   (*parser <infixsymbol>)
+   (*parser <number>)
+   (*parser <infixsexprescape>)
    (*parser <infixadd>)
    (*parser <infixneg>)
    (*parser <infixsub>)
@@ -499,9 +502,6 @@
    (*parser <infixarrayget>)
    (*parser <infixfuncall>)
    (*parser <infixparen>)
-   (*parser <infixsexprescape>)
-   (*parser <infixsymbol>)
-   (*parser <number>)
    (*disj 12)
 
    (*parser <whitespace>)
@@ -517,7 +517,7 @@
    (*parser <infixprefixextensionprefix>)
    (*parser <infixexpression>)
    (*caten 2)
-   (*pack-with (lambda (pref epxr) expr))
+   (*pack-with (lambda (pref expr) expr))
    done))
 
 (define <sexpr>
