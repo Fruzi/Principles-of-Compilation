@@ -150,7 +150,7 @@
    (*disj 3)
 
    (*caten 2)
-   (*pack-with (lambda (pref c) c))
+   (*pack cadr)
    done))
 
 (define <natural>
@@ -165,14 +165,15 @@
    (*parser (char #\-))
    (*disj 2)
    *maybe
+   (*pack-with (lambda (? s)
+                 (if ?
+                     (list s)
+                     '())))
 
    (*parser <natural>)
 
    (*caten 2)
-   (*pack-with (lambda (sign num)
-                 (if (car sign)
-                     `(,@(cdr sign) ,@num)
-                     num)))
+   (*pack-with append)
    done))
 
 (define <fraction>
@@ -207,18 +208,19 @@
 
    (*parser (char #\\))
    (*parser (char #\"))
-   (*parser (char #\t))
-   (*pack (lambda (_) #\tab))
-   (*parser (char #\f))
-   (*pack (lambda (_) #\page))
-   (*parser (char #\n))
-   (*pack (lambda (_) #\newline))
-   (*parser (char #\r))
-   (*pack (lambda (_) #\return))
+   (*parser (char-ci #\t))
+   (*parser (char-ci #\f))
+   (*parser (char-ci #\n))
+   (*parser (char-ci #\r))
    (*disj 6)
 
    (*caten 2)
-   (*pack-with (lambda (_ c) c))
+   (*pack-with (lambda (_ c)
+                 (cond ((char-ci=? c #\t) #\tab)
+                       ((char-ci=? c #\f) #\page)
+                       ((char-ci=? c #\n) #\newline)
+                       ((char-ci=? c #\r) #\return)
+                       (else c))))
    done))
 
 
@@ -229,7 +231,7 @@
    (*parser (char #\;))
 
    (*caten 3)
-   (*pack-with (lambda (bs char sc) char))
+   (*pack cadr)
    done))   
 
 (define <stringchar>
@@ -281,7 +283,7 @@
    (*parser (char #\)))
 
    (*caten 3)
-   (*pack-with (lambda (l s r) s))
+   (*pack cadr)
    done))
 
 (define <improperlist>
@@ -312,21 +314,40 @@
    (*parser (char #\'))
    (*delayed (lambda () <sexpr>))
    (*caten 2)
-   (*pack-with (lambda (q s) `',s))
+   (*pack-with (lambda (q s) (list 'quote s)))
    done))
 
-(define <quasiquoted> <fail>)
+(define <quasiquoted>
+  (new
+   (*parser (char #\`))
+   (*delayed (lambda () <sexpr>))
+   (*caten 2)
+   (*pack-with (lambda (q s) (list 'quasiquote s)))
+   done))
 
-(define <unquoted> <fail>)
+(define <unquoted>
+  (new
+   (*parser (char #\,))
+   (*delayed (lambda () <sexpr>))
+   (*caten 2)
+   (*pack-with (lambda (q s) (list 'unquote s)))
+   done))
 
-(define <unquoteandspliced> <fail>)
+(define <unquoteandspliced>
+  (new
+   (*parser (char #\,))
+   (*parser (char #\@))
+   (*delayed (lambda () <sexpr>))
+   (*caten 3)
+   (*pack-with (lambda (q at s) (list 'unquote-splicing s)))
+   done))
 
 (define <cbnamesyntax1>
   (new
    (*parser (char #\@))
    (*delayed (lambda () <sexpr>))
    (*caten 2)
-   (*pack-with (lambda (@ s) s))
+   (*pack cadr)
    done))
 
 (define <cbnamesyntax2>
@@ -335,7 +356,7 @@
    (*delayed (lambda () <sexpr>))
    (*parser (char #\}))
    (*caten 3)
-   (*pack-with (lambda (lcb s rcb) s))
+   (*pack cadr)
    done))
 
 (define <cbname>
@@ -363,6 +384,8 @@
    (*parser (char #\+))
    (*delayed (lambda () <infixexpression>))
    (*caten 3)
+   (*pack-with (lambda (e1 _ e2)
+                 `(+ ,e1 ,e2)))
    done))
 
 (define <infixneg>
@@ -370,6 +393,8 @@
    (*parser (char #\-))
    (*delayed (lambda () <infixexpression>))
    (*caten 2)
+   (*pack-with (lambda (_ e)
+                 `(- ,e)))
    done))
 
 (define <infixsub>
@@ -378,6 +403,8 @@
    (*parser (char #\-))
    (*delayed (lambda () <infixexpression>))
    (*caten 3)
+   (*pack-with (lambda (e1 _ e2)
+                         `(- ,e1 ,e2)))
    done))
 
 (define <infixmul>
@@ -386,6 +413,8 @@
    (*parser (char #\*))
    (*delayed (lambda () <infixexpression>))
    (*caten 3)
+   (*pack-with (lambda (e1 _ e2)
+                 `(* ,e1 ,e2)))
    done))
 
 (define <infixdiv>
@@ -394,6 +423,8 @@
    (*parser (char #\/))
    (*delayed (lambda () <infixexpression>))
    (*caten 3)
+   (*pack-with (lambda (e1 _ e2)
+                         `(/ ,e1 ,e2)))
    done))
 
 (define <powersymbol>
@@ -412,6 +443,8 @@
    (*parser <powersymbol>)
    (*delayed (lambda () <infixexpression>))
    (*caten 3)
+   (*pack-with (lambda (e1 _ e2)
+                         `(expt ,e1 ,e2)))
    done))
 
 (define <infixarrayget>
@@ -421,6 +454,8 @@
    (*delayed (lambda () <infixexpression>))
    (*parser (char #\]))
    (*caten 4)
+   (*pack-with (lambda (e1 _ e2 __)
+                         `(vector-ref ,e1 ,e2)))
    done))
 
 (define <infixarglist>
@@ -430,21 +465,30 @@
    (*parser (char #\,))
    (*delayed (lambda () <infixexpression>))
    (*caten 2)
+   (*pack cadr)
    *star
 
    (*caten 2)
-
-   (*parser <epsilon>)
-   (*disj 2)
+   (*pack-with (lambda (first rest) `(,first ,@rest)))
    done))
 
 (define <infixfuncall>
   (new
    (*delayed (lambda () <infixexpression>))
    (*parser (char #\())
+
+   (*parser (char #\)))
+   (*pack (lambda (_) '()))
+
    (*parser <infixarglist>)
    (*parser (char #\)))
-   (*caten 4)
+   (*caten 2)
+   (*pack car)
+
+   (*disj 2)
+   (*caten 3)
+   (*pack-with (lambda (e l a)
+                 (cons e a)))
    done))
 
 
@@ -463,17 +507,21 @@
    (*caten 2)
    done))
 
-(define <infixsymbolchar>
+(define <opsymbol>
   (new
-   (*parser <symbolchar>)
-
    (*parser (const (lambda (e)
                      (member e '(#\^ #\* #\- #\+ #\/)))))
+   
    (*parser (char #\*))
    (*times 2)
 
    (*disj 2)
+   done))
 
+(define <infixsymbolchar>
+  (new
+   (*parser <symbolchar>)
+   (*parser <opsymbol>)
    *diff
    done))
 
@@ -485,30 +533,36 @@
             (string->symbol (list->string e))))
    done))
 
+(define <mathop>
+  (new
+   (*parser <infixpow>)
+   (*parser <infixmul>)
+   (*parser <infixdiv>)
+   (*parser <infixadd>)
+   (*parser <infixsub>)
+   (*disj 5)
+   done))
+
 (define <infixexpression>
   (new
    (*parser <whitespace>)
    *star
 
-   (*parser <infixsymbol>)
    (*parser <number>)
-   (*parser <infixsexprescape>)
-   (*parser <infixadd>)
+   (*parser <infixsymbol>)
+   (*parser <mathop>)
    (*parser <infixneg>)
-   (*parser <infixsub>)
-   (*parser <infixmul>)
-   (*parser <infixdiv>)
-   (*parser <infixpow>)
    (*parser <infixarrayget>)
    (*parser <infixfuncall>)
    (*parser <infixparen>)
-   (*disj 12)
+   (*parser <infixsexprescape>)
+   (*disj 8)
 
    (*parser <whitespace>)
    *star
 
    (*caten 3)
-   (*pack-with (lambda (w1 ie w2) ie))
+   (*pack cadr)
 
    done))
 
@@ -517,7 +571,7 @@
    (*parser <infixprefixextensionprefix>)
    (*parser <infixexpression>)
    (*caten 2)
-   (*pack-with (lambda (pref expr) expr))
+   (*pack cadr)
    done))
 
 (define <sexpr>
@@ -535,8 +589,8 @@
    (*parser <vector>)
    (*parser <quoted>)
    (*parser <quasiquoted>)
-   (*parser <unquoted>)
    (*parser <unquoteandspliced>)
+   (*parser <unquoted>)
    (*parser <cbname>)
    (*parser <infixextension>)   
    (*disj 14)
@@ -545,5 +599,5 @@
    *star
 
    (*caten 3)
-   (*pack-with (lambda (w1 s w2) s))
+   (*pack cadr)
    done))
