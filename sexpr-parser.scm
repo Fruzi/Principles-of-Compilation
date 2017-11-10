@@ -33,6 +33,17 @@
    *diff
    done))
 
+(define <whitespacenonewline>
+  (new
+   (*parser <any>)
+
+   (*parser <visiblesimplechar>)
+   (*parser (char #\newline))
+   (*disj 2)
+   *diff
+
+   done))
+
 (define <lambda>
   (new
    (*parser (char-ci #\l))
@@ -259,16 +270,21 @@
 (define <symbolchar>
   (new
    (*parser (range #\0 #\9))
-   (*parser (range-ci #\a #\z))
+   (*parser (range #\a #\z))
+   (*parser (range #\A #\Z))
+   (*pack (lambda (c)
+            (integer->char (+ (char->integer c) (char- #\a #\A)))))
    (*parser (const (lambda (e)
-                     (member e '(#\! #\$ #\^ #\* #\- #\_ #\= #\+ #\< #\> #\? #\/)))))
-   (*disj 3)
+                     (member e '(#\: #\! #\$ #\^ #\* #\- #\_ #\= #\+ #\< #\> #\? #\/)))))
+   (*disj 4)
    done))
 
 (define <symbol>
   (new
    (*parser <symbolchar>)
    *plus
+   (*parser <number>)
+   *diff
    (*pack (lambda (e)
             (string->symbol (list->string e))))
    done))
@@ -277,12 +293,24 @@
   (new
    (*parser (char #\())
    
-   (*delayed (lambda () <sexpr>))
+   (*parser <whitespace>)
    *star
    
    (*parser (char #\)))
 
-   (*caten 3)
+   (*caten 2)
+   (*pack (lambda (_) '()))
+
+   (*delayed (lambda () <sexpr>))
+   *star
+
+   (*parser (char #\)))
+
+   (*caten 2)
+   (*pack car)
+
+   (*disj 2)
+   (*caten 2)
    (*pack cadr)
    done))
 
@@ -290,15 +318,26 @@
   (new
    (*parser (char #\())
 
-   (*delayed (lambda () <sexpr>))
+   (*parser <whitespace>)
+   *star
+
+   (*delayed (lambda () <sexprnowhitespace>))
+
+   (*parser <whitespace>)
    *plus
 
+   (*caten 2)
+   (*pack car)
+   *plus
+   (*pack-with (lambda l (apply append l)))
+
    (*parser (char #\.))
+   (*parser <whitespace>)
    (*delayed (lambda () <sexpr>))
    (*parser (char #\)))
 
-   (*caten 5)
-   (*pack-with (lambda (l ss d s r) `(,@ss . ,s)))
+   (*caten 7)
+   (*pack-with (lambda (l w1 e1 d w2 e2 r) `(,@e1 . ,e2)))
    done))
 
 (define <vector>
@@ -378,53 +417,78 @@
    (*caten 2)
    done))
 
-(define <infixadd>
-  (new
-   (*delayed (lambda () <infixexpression>))
-   (*parser (char #\+))
-   (*delayed (lambda () <infixexpression>))
-   (*caten 3)
-   (*pack-with (lambda (e1 _ e2)
-                 `(+ ,e1 ,e2)))
-   done))
-
 (define <infixneg>
   (new
    (*parser (char #\-))
-   (*delayed (lambda () <infixexpression>))
+   (*delayed (lambda () <infixatomic>))
    (*caten 2)
    (*pack-with (lambda (_ e)
                  `(- ,e)))
    done))
 
-(define <infixsub>
+(define <infixaddandsub>
   (new
-   (*delayed (lambda () <infixexpression>))
+   (*parser <whitespace>)
+   *star
+
+   (*delayed (lambda () <infixmulanddiv>))
+
+   (*parser <whitespace>)
+   *star
+
+   (*parser (char #\+))
    (*parser (char #\-))
-   (*delayed (lambda () <infixexpression>))
+   (*disj 2)
+   (*pack (lambda (c)
+	          (string->symbol (list->string (list c)))))
+
+   (*parser <whitespace>)
+   *star
+
+   (*delayed (lambda () <infixmulanddiv>))
+
+   (*caten 4)
+   (*pack-with (lambda (w1 op w2 e)
+                 (list op e)))
+   *star
+
+   (*caten 2)
+   (*pack-with (lambda (first rest)
+		             (infix->prefix first rest)))
+
+   (*parser <whitespace>)
+   *star
+
    (*caten 3)
-   (*pack-with (lambda (e1 _ e2)
-                         `(- ,e1 ,e2)))
+   (*pack cadr)
    done))
 
-(define <infixmul>
+(define <infixmulanddiv>
   (new
-   (*delayed (lambda () <infixexpression>))
+   (*delayed (lambda () <infixpow>))
+
+   (*parser <whitespace>)
+   *star
+
    (*parser (char #\*))
-   (*delayed (lambda () <infixexpression>))
-   (*caten 3)
-   (*pack-with (lambda (e1 _ e2)
-                 `(* ,e1 ,e2)))
-   done))
-
-(define <infixdiv>
-  (new
-   (*delayed (lambda () <infixexpression>))
    (*parser (char #\/))
-   (*delayed (lambda () <infixexpression>))
-   (*caten 3)
-   (*pack-with (lambda (e1 _ e2)
-                         `(/ ,e1 ,e2)))
+   (*disj 2)
+   (*pack (lambda (c)
+	    (string->symbol (list->string (list c)))))
+
+   (*parser <whitespace>)
+   *star
+
+   (*delayed (lambda () <infixpow>))
+
+   (*caten 4)
+   (*pack-with (lambda (w1 op w2 e)
+                 (list op e)))
+   *star
+
+   (*caten 2)
+   (*pack-with (lambda (first rest)
+		             (infix->prefix first rest)))
    done))
 
 (define <powersymbol>
@@ -435,27 +499,52 @@
    (*times 2)
 
    (*disj 2)
+   (*pack (lambda (_) 'expt))
    done))
 
 (define <infixpow>
   (new
-   (*delayed (lambda () <infixexpression>))
+   (*delayed (lambda () <infixarraygetandfuncall>))
+   (*delayed (lambda () <infixatomic>))
+   (*disj 2)
+
+   (*parser <whitespace>)
+   *star
+
    (*parser <powersymbol>)
-   (*delayed (lambda () <infixexpression>))
-   (*caten 3)
-   (*pack-with (lambda (e1 _ e2)
-                         `(expt ,e1 ,e2)))
+
+   (*parser <whitespace>)
+   *star
+
+   (*delayed (lambda () <infixarraygetandfuncall>))
+   (*delayed (lambda () <infixatomic>))
+   (*disj 2)
+
+   (*caten 4)
+   (*pack-with (lambda (w1 op w2 e)
+                 (list op e)))
+   *star
+
+   (*caten 2)
+   (*pack-with (lambda (first rest)
+		             (infix->prefix first rest)))
    done))
 
 (define <infixarrayget>
   (new
-   (*delayed (lambda () <infixexpression>))
+   (*delayed (lambda () <infixatomic>))
+
    (*parser (char #\[))
    (*delayed (lambda () <infixexpression>))
    (*parser (char #\]))
-   (*caten 4)
-   (*pack-with (lambda (e1 _ e2 __)
-                         `(vector-ref ,e1 ,e2)))
+   (*caten 3)
+   (*pack-with (lambda (l e r)
+                 `(vector-ref ,e)))
+   *plus
+
+   (*caten 2)
+   (*pack-with (lambda (e1 e2)
+                 (infix->prefix e1 e2)))
    done))
 
 (define <infixarglist>
@@ -469,28 +558,35 @@
    *star
 
    (*caten 2)
-   (*pack-with (lambda (first rest) `(,first ,@rest)))
+   (*pack-with (lambda (first rest)
+                 (cons first rest)))
    done))
 
 (define <infixfuncall>
   (new
-   (*delayed (lambda () <infixexpression>))
-   (*parser (char #\())
-
-   (*parser (char #\)))
-   (*pack (lambda (_) '()))
-
-   (*parser <infixarglist>)
-   (*parser (char #\)))
-   (*caten 2)
-   (*pack car)
-
+   (*delayed (lambda () <infixarrayget>))
+   (*delayed (lambda () <infixatomic>))
    (*disj 2)
+
+   (*parser (char #\())
+   (*delayed (lambda () <infixarglist>))
+   (*parser (char #\)))
    (*caten 3)
-   (*pack-with (lambda (e l a)
-                 (cons e a)))
+   (*pack-with (lambda (l e r)
+                 e))
+   *plus
+
+   (*caten 2)
+   (*pack-with (lambda (e1 e2)
+                 (flatten (cons e1 e2))))
    done))
 
+(define <infixarraygetandfuncall>
+  (new
+   (*parser <infixarrayget>)
+   (*parser <infixfuncall>)
+   (*disj 2)
+   done))
 
 (define <infixparen>
   (new
@@ -498,6 +594,7 @@
    (*delayed (lambda () <infixexpression>))
    (*parser (char #\)))
    (*caten 3)
+   (*pack cadr)
    done))
 
 (define <infixsexprescape>
@@ -505,6 +602,7 @@
    (*parser <infixprefixextensionprefix>)
    (*delayed (lambda () <sexpr>))
    (*caten 2)
+   (*pack cadr)
    done))
 
 (define <opsymbol>
@@ -529,42 +627,130 @@
   (new
    (*parser <infixsymbolchar>)
    *plus
+   (*parser <number>)
+   *diff
    (*pack (lambda (e)
             (string->symbol (list->string e))))
    done))
 
-(define <mathop>
-  (new
-   (*parser <infixpow>)
-   (*parser <infixmul>)
-   (*parser <infixdiv>)
-   (*parser <infixadd>)
-   (*parser <infixsub>)
-   (*disj 5)
-   done))
-
-(define <infixexpression>
+(define <infixatomic>
   (new
    (*parser <whitespace>)
+   (*delayed (lambda () <infixlinecomment>))
+   (*delayed (lambda () <infixexprcomment>))
+   (*disj 3)
    *star
 
-   (*parser <number>)
-   (*parser <infixsymbol>)
-   (*parser <mathop>)
-   (*parser <infixneg>)
-   (*parser <infixarrayget>)
-   (*parser <infixfuncall>)
-   (*parser <infixparen>)
    (*parser <infixsexprescape>)
-   (*disj 8)
+   (*parser <infixparen>)
+   (*parser <infixsymbol>)
+   (*parser <number>)
+   (*parser <infixneg>)
+   (*disj 5)
 
    (*parser <whitespace>)
+   (*delayed (lambda () <infixlinecomment>))
+   (*delayed (lambda () <infixexprcomment>))
+   (*disj 3)
+   *star
+
+   (*caten 3)
+   (*pack cadr)
+   done))
+
+(define <linecomment>
+  (new
+   (*parser (char #\;))
+
+   (*delayed (lambda () <sexprwithwhitespacenonewline>))
+   *star
+
+   (*parser (char #\newline))
+   (*caten 3)
+   done))
+
+(define <sexprcomment>
+  (new
+   (*parser (char #\#))
+   (*parser (char #\;))
+   (*delayed (lambda () <sexpr>))
+   (*caten 3)
+   done))
+
+(define <infixlinecomment>
+  (new
+   (*parser (char #\;))
+
+   (*delayed (lambda () <infixexpressionwithwhitespacenonewline>))
+   *star
+
+   (*parser (char #\newline))
+   (*caten 3)
+   done))
+
+(define <infixexprcomment>
+  (new
+   (*parser (char #\#))
+   (*parser (char #\;))
+   (*delayed (lambda () <infixexpression>))
+   (*caten 3)
+   done))
+
+(define <infixexpressioncore>
+  (new
+   (*parser <infixsexprescape>)
+   (*parser <infixaddandsub>)
+   (*parser <infixmulanddiv>)
+   (*parser <infixpow>)
+   (*parser <infixneg>)
+   (*parser <infixarraygetandfuncall>)
+   (*parser <infixatomic>)
+   (*disj 7)
+   done))
+
+(define <infixexpressionwithwhitespace>
+  (new
+   (*parser <whitespace>)
+   (*parser <infixexprcomment>)
+   (*parser <infixlinecomment>)
+   (*disj 3)
+   *star
+
+   (*parser <infixexpressioncore>)
+
+   (*parser <whitespace>)
+   (*parser <infixexprcomment>)
+   (*parser <infixlinecomment>)
+   (*disj 3)
    *star
 
    (*caten 3)
    (*pack cadr)
 
    done))
+
+(define <infixexpressionwithwhitespacenonewline>
+  (new
+   (*parser <whitespacenonewline>)
+   (*parser <infixexprcomment>)
+   (*parser <infixlinecomment>)
+   (*disj 3)
+   *star
+
+   (*parser <infixexpressioncore>)
+
+   (*parser <whitespacenonewline>)
+   (*parser <infixexprcomment>)
+   (*parser <infixlinecomment>)
+   (*disj 3)
+   *star
+
+   (*caten 3)
+   (*pack cadr)
+
+   done))
+
+(define <infixexpression> <infixexpressionwithwhitespace>)
 
 (define <infixextension>
   (new
@@ -574,16 +760,13 @@
    (*pack cadr)
    done))
 
-(define <sexpr>
+(define <sexprcore>
   (new
-   (*parser <whitespace>)
-   *star
-   
    (*parser <boolean>)
    (*parser <char>)
+   (*parser <symbol>)
    (*parser <number>)
    (*parser <string>)
-   (*parser <symbol>)
    (*parser <properlist>)
    (*parser <improperlist>)
    (*parser <vector>)
@@ -592,12 +775,89 @@
    (*parser <unquoteandspliced>)
    (*parser <unquoted>)
    (*parser <cbname>)
-   (*parser <infixextension>)   
+   (*parser <infixextension>)
    (*disj 14)
+   done))
+
+(define <sexprwithwhitespace>
+  (new
+   (*parser <whitespace>)
+   (*parser <sexprcomment>)
+   (*parser <linecomment>)
+   (*disj 3)
+   *star
+
+   (*parser <sexprcore>)
 
    (*parser <whitespace>)
+   (*parser <sexprcomment>)
+   (*parser <linecomment>)
+   (*disj 3)
    *star
 
    (*caten 3)
    (*pack cadr)
    done))
+
+(define <sexprwithwhitespacenonewline>
+  (new
+   (*parser <whitespacenonewline>)
+   (*parser <sexprcomment>)
+   (*parser <linecomment>)
+   (*disj 3)
+   *star
+
+   (*parser <sexprcore>)
+
+   (*parser <whitespacenonewline>)
+   (*parser <sexprcomment>)
+   (*parser <linecomment>)
+   (*disj 3)
+   *star
+
+   (*caten 3)
+   (*pack cadr)
+   done))
+
+(define <sexprnowhitespace>
+  (new
+   (*parser <sexprcomment>)
+   (*parser <linecomment>)
+   (*disj 2)
+   *star
+
+   (*parser <sexprcore>)
+
+   (*parser <sexprcomment>)
+   (*parser <linecomment>)
+   (*disj 3)
+   *star
+
+   (*caten 2)
+   (*pack cadr)
+   done))
+
+(define <sexpr> <sexprwithwhitespace>)
+
+(define infix->prefix
+  (lambda (first rest)
+    (if (null? rest)
+        first
+        (letrec ((op (caar rest))
+                 (second (cadar rest))
+                 (loop (lambda (acc rest)
+                         (if (null? rest)
+                             acc
+                             (let ((op (caar rest))
+                                   (second (cadar rest)))
+                               (if (eq? op 'expt)
+                                   (list op acc (infix->prefix second (cdr rest)))
+                                   (loop (list op acc second) (cdr rest))))))))
+          (if (eq? op 'expt)
+              (list op first (infix->prefix second (cdr rest)))
+              (loop (list op first second) (cdr rest)))))))
+
+(define (flatten l)
+  (cond ((null? l) '())
+        ((pair? l) (append (flatten (car l)) (cadr l)))
+        (else (list l))))
