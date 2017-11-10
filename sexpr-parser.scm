@@ -578,7 +578,7 @@
 
    (*caten 2)
    (*pack-with (lambda (e1 e2)
-                 (flatten (cons e1 e2))))
+       (func-infix->prefix e1 e2)))
    done))
 
 (define <infixarraygetandfuncall>
@@ -856,6 +856,14 @@
           (if (eq? op 'expt)
               (list op first (infix->prefix second (cdr rest)))
               (loop (list op first second) (cdr rest)))))))
+                    
+              
+(define func-infix->prefix
+	(lambda (func args)
+		(let ((result (cons func (car args)))) 
+			(if (equal? (length args) 1)
+			result
+			(func-infix->prefix result (cdr args))))))
 
 (define (flatten l)
   (cond ((null? l) '())
