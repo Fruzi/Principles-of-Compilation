@@ -335,7 +335,6 @@
    (*caten 2)
    (*pack car)
    *plus
-   (*pack-with (lambda l (apply append l)))
 
    (*parser (char #\.))
    (*parser <whitespace>)
@@ -661,6 +660,7 @@
    *star
 
    (*parser (char #\newline))
+   *maybe
    (*caten 3)
    done))
 
@@ -826,10 +826,10 @@
 
    (*parser <sexprcomment>)
    (*parser <linecomment>)
-   (*disj 3)
+   (*disj 2)
    *star
 
-   (*caten 2)
+   (*caten 3)
    (*pack cadr)
    done))
 
