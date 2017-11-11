@@ -203,6 +203,8 @@
    (*disj 2)
    (*pack (lambda (n)
             (string->number (list->string n))))
+   (*delayed (lambda () <infixsymbol>))
+   *not-followed-by
    done))
 
 (define <stringliteralchar>
@@ -267,24 +269,28 @@
 		             (list->string str)))
    done))
 
-(define <symbolchar>
+(define <symbolcharnodigits>
   (new
-   (*parser (range #\0 #\9))
    (*parser (range #\a #\z))
    (*parser (range #\A #\Z))
    (*pack (lambda (c)
             (integer->char (+ (char->integer c) (char- #\a #\A)))))
    (*parser (const (lambda (e)
                      (member e '(#\: #\! #\$ #\^ #\* #\- #\_ #\= #\+ #\< #\> #\? #\/)))))
-   (*disj 4)
+   (*disj 3)
+   done))
+
+(define <symbolchar>
+  (new
+   (*parser (range #\0 #\9))
+   (*parser <symbolcharnodigits>)
+   (*disj 2)
    done))
 
 (define <symbol>
   (new
    (*parser <symbolchar>)
    *plus
-   (*parser <number>)
-   *diff
    (*pack (lambda (e)
             (string->symbol (list->string e))))
    done))
@@ -420,7 +426,7 @@
 (define <infixneg>
   (new
    (*parser (char #\-))
-   (*delayed (lambda () <infixatomic>))
+   (*delayed (lambda () <infixexpression>))
    (*caten 2)
    (*pack-with (lambda (_ e)
                  `(- ,e)))
@@ -432,6 +438,8 @@
    *star
 
    (*delayed (lambda () <infixmulanddiv>))
+   (*parser <infixneg>)
+   *diff
 
    (*parser <whitespace>)
    *star
@@ -446,6 +454,8 @@
    *star
 
    (*delayed (lambda () <infixmulanddiv>))
+   (*parser <infixneg>)
+   *diff
 
    (*caten 4)
    (*pack-with (lambda (w1 op w2 e)
@@ -530,23 +540,6 @@
 		             (infix->prefix first rest)))
    done))
 
-(define <infixarrayget>
-  (new
-   (*delayed (lambda () <infixatomic>))
-
-   (*parser (char #\[))
-   (*delayed (lambda () <infixexpression>))
-   (*parser (char #\]))
-   (*caten 3)
-   (*pack-with (lambda (l e r)
-                 `(vector-ref ,e)))
-   *plus
-
-   (*caten 2)
-   (*pack-with (lambda (e1 e2)
-                 (infix->prefix e1 e2)))
-   done))
-
 (define <infixarglist>
   (new
    (*delayed (lambda () <infixexpression>))
@@ -560,32 +553,37 @@
    (*caten 2)
    (*pack-with (lambda (first rest)
                  (cons first rest)))
+
+   (*parser <whitespace>)
+   *star
+   (*pack (lambda (w) '()))
+
+   (*disj 2)
    done))
 
-(define <infixfuncall>
+(define <infixarraygetandfuncall>
   (new
-   (*delayed (lambda () <infixarrayget>))
    (*delayed (lambda () <infixatomic>))
-   (*disj 2)
 
    (*parser (char #\())
    (*delayed (lambda () <infixarglist>))
    (*parser (char #\)))
    (*caten 3)
    (*pack-with (lambda (l e r)
-                 e))
-   *plus
+                 (cons '() e)))
 
+   (*parser (char #\[))
+   (*delayed (lambda () <infixexpression>))
+   (*parser (char #\]))
+   (*caten 3)
+   (*pack-with (lambda (l e r)
+                 `(vector-ref ,e)))
+
+   (*disj 2)
+   *plus
    (*caten 2)
    (*pack-with (lambda (e1 e2)
-       (func-infix->prefix e1 e2)))
-   done))
-
-(define <infixarraygetandfuncall>
-  (new
-   (*parser <infixarrayget>)
-   (*parser <infixfuncall>)
-   (*disj 2)
+       (infix->prefix e1 e2)))
    done))
 
 (define <infixparen>
@@ -627,8 +625,6 @@
   (new
    (*parser <infixsymbolchar>)
    *plus
-   (*parser <number>)
-   *diff
    (*pack (lambda (e)
             (string->symbol (list->string e))))
    done))
@@ -643,10 +639,9 @@
 
    (*parser <infixsexprescape>)
    (*parser <infixparen>)
-   (*parser <infixsymbol>)
    (*parser <number>)
-   (*parser <infixneg>)
-   (*disj 5)
+   (*parser <infixsymbol>)
+   (*disj 4)
 
    (*parser <whitespace>)
    (*delayed (lambda () <infixlinecomment>))
@@ -699,13 +694,14 @@
 (define <infixexpressioncore>
   (new
    (*parser <infixsexprescape>)
+   (*parser <infixneg>)
    (*parser <infixaddandsub>)
    (*parser <infixmulanddiv>)
    (*parser <infixpow>)
    (*parser <infixneg>)
    (*parser <infixarraygetandfuncall>)
    (*parser <infixatomic>)
-   (*disj 7)
+   (*disj 8)
    done))
 
 (define <infixexpressionwithwhitespace>
@@ -764,8 +760,8 @@
   (new
    (*parser <boolean>)
    (*parser <char>)
-   (*parser <symbol>)
    (*parser <number>)
+   (*parser <symbol>)
    (*parser <string>)
    (*parser <properlist>)
    (*parser <improperlist>)
@@ -844,28 +840,27 @@
     (if (null? rest)
         first
         (letrec ((op (caar rest))
-                 (second (cadar rest))
+                 (second (if (null? (cdar rest)) '() (cadar rest)))
                  (loop (lambda (acc rest)
                          (if (null? rest)
                              acc
                              (let ((op (caar rest))
-                                   (second (cadar rest)))
-                               (if (eq? op 'expt)
-                                   (list op acc (infix->prefix second (cdr rest)))
-                                   (loop (list op acc second) (cdr rest))))))))
-          (if (eq? op 'expt)
-              (list op first (infix->prefix second (cdr rest)))
-              (loop (list op first second) (cdr rest)))))))
+                                   (second (if (null? (cdar rest)) '() (cadar rest))))
+                               (cond ((null? op)
+                                      (loop (cons acc (cdar rest)) (cdr rest)))
+                                     ((eq? op 'expt)
+                                      (list op acc (infix->prefix second (cdr rest))))
+                                     (else
+                                      (loop (list op acc second) (cdr rest)))))))))
+          (cond ((null? op)
+                 (loop (cons first (cdar rest)) (cdr rest)))
+                ((eq? op 'expt)
+                 (list op first (infix->prefix second (cdr rest))))
+                (else
+                 (loop (list op first second) (cdr rest))))))))
                     
-              
-(define func-infix->prefix
-	(lambda (func args)
-		(let ((result (cons func (car args)))) 
-			(if (equal? (length args) 1)
-			result
-			(func-infix->prefix result (cdr args))))))
-
-(define (flatten l)
+(define flatten
+  (lambda (l)
   (cond ((null? l) '())
         ((pair? l) (append (flatten (car l)) (cadr l)))
-        (else (list l))))
+          (else (list l)))))
