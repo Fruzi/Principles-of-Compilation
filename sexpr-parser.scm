@@ -425,7 +425,11 @@
 (define <infixneg>
   (new
    (*parser (char #\-))
-   (*delayed (lambda () <infixexpression>))
+   
+   (*delayed (lambda () <infixarraygetandfuncall>))
+   (*delayed (lambda () <infixatomic>))
+   (*disj 2)
+   
    (*caten 2)
    (*pack-with (lambda (_ e)
                  `(- ,e)))
@@ -437,8 +441,6 @@
    *star
 
    (*delayed (lambda () <infixmulanddiv>))
-   (*parser <infixneg>)
-   *diff
 
    (*parser <whitespace>)
    *star
@@ -453,8 +455,6 @@
    *star
 
    (*delayed (lambda () <infixmulanddiv>))
-   (*parser <infixneg>)
-   *diff
 
    (*caten 4)
    (*pack-with (lambda (w1 op w2 e)
@@ -515,7 +515,8 @@
   (new
    (*delayed (lambda () <infixarraygetandfuncall>))
    (*delayed (lambda () <infixatomic>))
-   (*disj 2)
+   (*delayed (lambda () <infixneg>))
+   (*disj 3)
 
    (*parser <whitespace>)
    *star
@@ -527,7 +528,8 @@
 
    (*delayed (lambda () <infixarraygetandfuncall>))
    (*delayed (lambda () <infixatomic>))
-   (*disj 2)
+   (*delayed (lambda () <infixneg>))
+   (*disj 3)
 
    (*caten 4)
    (*pack-with (lambda (w1 op w2 e)
@@ -694,14 +696,13 @@
 (define <infixexpressioncore>
   (new
    (*parser <infixsexprescape>)
-   (*parser <infixneg>)
    (*parser <infixaddandsub>)
    (*parser <infixmulanddiv>)
    (*parser <infixpow>)
-   (*parser <infixneg>)
    (*parser <infixarraygetandfuncall>)
+   (*parser <infixneg>)
    (*parser <infixatomic>)
-   (*disj 8)
+   (*disj 7)
    done))
 
 (define <infixexpressionwithwhitespace>
