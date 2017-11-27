@@ -13,7 +13,7 @@
           ((define? e) (make-define e))
 
           ((variable? e) `(var ,e))
-          (else e))))
+          (else (errorf 'parser "Unknown form: ~a" e)))))
 
 (define *reserved-words*
   '(and begin cond define do else if lambda
@@ -29,13 +29,14 @@
 
 (define variable?
   (lambda (e)
-    (not (member e *reserved-words*))))
+    (not (or (pair? e)
+             (member e *reserved-words*)))))
 
 (define if3?
   (lambda (e)
     (and (keyword? e 'if)
-         (or (eq? (length e) 3)
-             (eq? (length e) 4)))))
+         (or (= (length e) 3)
+             (= (length e) 4)))))
 
 (define or?
   (lambda (e)
@@ -43,7 +44,8 @@
 
 (define lambda?
   (lambda (e)
-    (keyword? e 'lambda)))
+    (and (keyword? e 'lambda)
+         (> (length e) 2))))
 
 (define seq?
   (lambda (e)
@@ -61,13 +63,17 @@
 
 (define define?
   (lambda (e)
-    (keyword? e 'define)))
-
+    (and (keyword? e 'define)
+         (or (and (= (length e) 3)
+                  (not (pair? (cadr e))))
+             (and (> (length e) 2)
+                  (pair? (cadr e)))))))
+                  
 (define make-if3
   (lambda (e)
     (let ((test (cadr e))
           (dit (caddr e))
-          (dif (if (eq? (length e) 4)
+          (dif (if (= (length e) 4)
                    (cadddr e)
                    (void))))
       `(if3 ,(parse test) ,(parse dit) ,(parse dif)))))
@@ -84,25 +90,31 @@
     (let ((params (cadr e))
           (body (cddr e)))
       (cond ((list? params)
-             `(lambda-simple ,params ,(parse (cons 'begin body))))
+             `(lambda-simple ,params ,(parse `(begin ,@body))))
             ((pair? params)
-             `(lambda-opt ,@(split-improper-list params) ,(parse (cons 'begin body))))
+             `(lambda-opt ,@(split-improper-list params) ,(parse `(begin ,@body))))
             (else
-             `(lambda-opt () ,params ,(parse (cons 'begin body))))))))
+             `(lambda-opt () ,params ,(parse `(begin ,@body))))))))
 
 (define make-seq
-  (lambda (b)
-    (let ((exprs (cdr b)))
+  (lambda (e)
+    (let ((exprs (cdr e))
+          (ignore-nested-seqs (lambda (acc curr)
+                               (if (seq? curr)
+                                   `(,@acc ,@(map parse (cdr curr)))
+                                   `(,@acc ,(parse curr))))))
       (if (null? (cdr exprs))
           (parse (car exprs))
-          `(seq ,(map parse exprs))))))
+          `(seq ,(fold-left ignore-nested-seqs '() exprs))))))
 
 (define make-applic
   (lambda (e)
-    (let ((app (car e))
+    (let ((f (car e))
           (args (cdr e)))
-      `(applic ,(parse app)
-               ,(if (null? args) args (map parse args))))))
+      `(applic ,(parse f)
+               ,(if (null? args)
+                    '()
+                    (map parse args))))))
 
 (define make-set
   (lambda (e)
@@ -120,10 +132,10 @@
 
 (define make-mit-define
   (lambda (e)
-    (let ((app (caadr e))
+    (let ((f (caadr e))
           (params (cdadr e))
           (body (cddr e)))
-      `(define (var ,app) ,(make-lambda (append (list 'lambda params) body))))))
+      `(define (var ,f) ,(parse `(lambda ,params ,@body))))))
 
 (define keyword?
   (lambda (e k)
@@ -133,7 +145,7 @@
 (define split-improper-list
   (lambda (l)
     (letrec ((loop (lambda (l acc)
-                     (if (pair? l)
-                          (loop (cdr l) (append acc (list (car l))))
-                         (list acc l)))))
+                     (if (not (pair? l))
+                         (list acc l)
+                         (loop (cdr l) `(,@acc ,(car l)))))))
       (loop l '()))))
