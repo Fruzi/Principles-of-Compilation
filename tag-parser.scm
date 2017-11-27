@@ -68,7 +68,7 @@
                   (not (pair? (cadr e))))
              (and (> (length e) 2)
                   (pair? (cadr e)))))))
-                  
+
 (define make-if3
   (lambda (e)
     (let ((test (cadr e))
@@ -82,7 +82,7 @@
   (lambda (e)
     (let ((exprs (cdr e)))
       (if (null? exprs)
-          '(or)
+          (parse '#f)
           `(or ,(map parse exprs))))))
 
 (define make-lambda
@@ -103,9 +103,11 @@
                                (if (seq? curr)
                                    `(,@acc ,@(map parse (cdr curr)))
                                    `(,@acc ,(parse curr))))))
-      (if (null? (cdr exprs))
-          (parse (car exprs))
-          `(seq ,(fold-left ignore-nested-seqs '() exprs))))))
+      (if (null? exprs)
+          (parse (void))
+          (if (null? (cdr exprs))
+              (parse (car exprs))
+              `(seq ,(fold-left ignore-nested-seqs '() exprs)))))))
 
 (define make-applic
   (lambda (e)
