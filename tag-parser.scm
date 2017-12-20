@@ -3,7 +3,7 @@
 (define parse
   (lambda (e)
     (cond ((quote? e) `(const ,@(cdr e)))
-          ((quasiquote? e) (expand-qq (cadr e)))
+          ((quasiquote? e) (parse (expand-qq (cadr e))))
           ((constant? e) `(const ,e))
           ((if3? e) (make-if3 e))
           ((or? e) (make-or e))
@@ -157,7 +157,7 @@
           (parse (void))
           (if (null? (cdr exprs))
               (parse (car exprs))
-              `(seq ,@(map parse (car (ignore exprs)))))))))
+              `(seq ,(map parse (car (ignore exprs)))))))))
 
 (define make-applic
   (lambda (e)
