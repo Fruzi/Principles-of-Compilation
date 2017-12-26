@@ -151,8 +151,8 @@
                                (list curr)
                                '())
                            (if (not (seq? curr))
-                               (list (fold-left append '() (map ignore curr)))
-                               (fold-left append '() (map ignore curr)))))))
+                               (list (fold-left append '() (improper-map ignore curr)))
+                               (fold-left append '() (improper-map ignore curr)))))))
       (if (null? exprs)
           (parse (void))
           (if (null? (cdr exprs))
@@ -260,3 +260,9 @@
                      (let ((vars (map car bindings)))
                        (check-unique vars))
                      #t)))))))
+
+(define improper-map
+    (lambda (f l)
+      (cond ((list? l) (map f l))
+            ((not (pair? l)) (f l))
+            (else (cons (f (car l)) (improper-map f (cdr l)))))))

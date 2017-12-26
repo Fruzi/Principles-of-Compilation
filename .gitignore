@@ -1,3 +1,2 @@
-AmitOz/
-*.so
-test.scm
+*
+!tag-parser.scm
