@@ -144,20 +144,11 @@
 
 (define make-seq
   (lambda (e)
-    (letrec ((exprs (cdr e))
-             (ignore (lambda (curr)
-                       (if (not (pair? curr))
-                           (if (not (eq? curr 'begin))
-                               (list curr)
-                               '())
-                           (if (not (seq? curr))
-                               (list (fold-left append '() (improper-map ignore curr)))
-                               (fold-left append '() (improper-map ignore curr)))))))
-      (if (null? exprs)
-          (parse (void))
-          (if (null? (cdr exprs))
-              (parse (car exprs))
-              `(seq ,(map parse (car (ignore exprs)))))))))
+    (if (= (length e) 1)
+        (parse (void))
+        (if (= (length e) 2)
+            (parse (cadr e))
+            `(seq ,(apply append (map eliminate-nested-seqs (cdr e))))))))
 
 (define make-applic
   (lambda (e)
@@ -247,6 +238,12 @@
                          (loop (cdr l) `(,@acc ,(car l)))))))
       (loop l '()))))
 
+(define eliminate-nested-seqs
+  (lambda (e)
+    (if (seq? e)
+        (apply append (map eliminate-nested-seqs (cdr e)))
+        (list (parse e)))))
+
 (define let-base?
   (lambda (e)
     (letrec ((check-unique (lambda (rest)
@@ -260,9 +257,3 @@
                      (let ((vars (map car bindings)))
                        (check-unique vars))
                      #t)))))))
-
-(define improper-map
-    (lambda (f l)
-      (cond ((list? l) (map f l))
-            ((not (pair? l)) (f l))
-            (else (cons (f (car l)) (improper-map f (cdr l)))))))
