@@ -28,6 +28,12 @@
 
 %define MAKE_LITERAL(type, lit) ((lit << TYPE_BITS) | type)
 
+;;; MAKE_LITERAL_FROM_REG type, [register]
+%macro MAKE_LITERAL_FROM_REG 2
+  sal %2, TYPE_BITS
+  or rax, %1
+%endmacro
+
 %macro TYPE 1
 	and %1, ((1 << TYPE_BITS) - 1) 
 %endmacro
@@ -45,7 +51,11 @@
 	DATA_UPPER %1
 %endmacro
 
-%define MAKE_LITERAL_PAIR(car, cdr) (((((car - start_of_data) << ((WORD_SIZE - TYPE_BITS) >> 1)) | (cdr - start_of_data)) << TYPE_BITS) | T_PAIR)
+%define LITERAL_PAIR_BASE(car, cdr) (((car << ((WORD_SIZE - TYPE_BITS) >> 1)) | cdr) << TYPE_BITS)
+
+%define MAKE_LITERAL_PAIR(car, cdr) ((LITERAL_PAIR_BASE((car - start_of_data), (cdr - start_of_data))) | T_PAIR)
+
+%define MAKE_LITERAL_FRACTION(num, den) ((LITERAL_PAIR_BASE(num, den)) | T_FRACTION)
 
 %macro CAR 1
 	DATA_UPPER %1
@@ -64,9 +74,12 @@
 	push rax
 	push rbx
 	mov rax, %1
-	mov qword [rax], %2 - start_of_data
+  mov rbx, %2
+  sub rbx, start_of_data
+	mov qword [rax], rbx
 	shl qword [rax], ((WORD_SIZE - TYPE_BITS) >> 1)
-	lea rbx, [rax + 8 - start_of_data]
+	lea rbx, [rax + 8]
+  sub rbx, start_of_data
 	or qword [rax], rbx
 	shl qword [rax], TYPE_BITS
 	or qword [rax], T_CLOSURE
@@ -145,7 +158,220 @@
 %define SOB_TRUE MAKE_LITERAL(T_BOOL, 1)
 %define SOB_NIL MAKE_LITERAL(T_NIL, 0)
 
-global write_sob, write_sob_if_not_void
+;;; MAKE_DYNAMIC_PAIR target-addrees, car-addrees, cdr-addrees
+%macro MAKE_DYNAMIC_PAIR 3
+    push rax 
+    push rbx 
+    mov rax, %1 
+    mov qword [rax], %2
+    sub qword [rax], start_of_data
+    shl qword [rax], ((WORD_SIZE - TYPE_BITS) >> 1) 
+    mov rbx, %3 
+    sub rbx, start_of_data
+    or qword [rax], rbx 
+    shl qword [rax], TYPE_BITS 
+    or qword [rax], T_PAIR 
+    pop rbx 
+    pop rax 
+%endmacro
+
+;;; Simple frame access
+
+%define param(offset) qword [rbp + offset]
+
+struc scmframe
+.old_rbp: resq 1
+.ret_addr: resq 1
+.env: resq 1
+.arg_count: resq 1
+.A0: resq 1
+.A1: resq 1
+.A2: resq 1
+.A3: resq 1
+.A4: resq 1
+.A5: resq 1
+endstruc
+
+%define old_rbp param(scmframe.old_rbp)
+%define ret_addr param(scmframe.ret_addr)
+%define env param(scmframe.env)
+%define arg_count param(scmframe.arg_count)
+%define A0 param(scmframe.A0)
+%define A1 param(scmframe.A1)
+%define A2 param(scmframe.A2)
+%define A3 param(scmframe.A3)
+%define A4 param(scmframe.A4)
+%define A5 param(scmframe.A5)
+%define An(n) qword [rbp + 8 * (n + 4)]
+
+;; Right after an applic, the stack is: [ env | arg_count | arg0 | ... | argN | ... ]
+%define post_applic_arg_count qword [rsp + 8 * 1]
+
+;;; MALLOC n -> malloc(8 * n)
+%macro MALLOC 1
+    mov rdi, %1
+    sal rdi, 3
+    call malloc
+%endmacro
+
+extern exit, printf, scanf, malloc
+global main, write_sob, write_sob_if_not_void
+
+prim_car:
+  push rbp
+  mov rbp, rsp
+  cmp arg_count, 1
+  jne .end
+  mov rax, A0
+  mov rbx, rax
+  TYPE rbx
+  cmp rbx, T_PAIR
+  jne .end
+  CAR rax
+.end:
+  leave
+  ret
+
+prim_cdr:
+  push rbp
+  mov rbp, rsp
+  cmp arg_count, 1
+  jne .end
+  mov rax, A0
+  mov rbx, rax
+  TYPE rbx
+  cmp rbx, T_PAIR
+  jne .end
+  CDR rax
+.end:
+  leave
+  ret
+
+prim_cons:
+  push rbp
+  mov rbp, rsp
+  cmp arg_count, 2
+  jne .end
+  MALLOC 1
+  push rax
+  MALLOC 1
+  push rax
+  MALLOC 1
+  mov rcx, rax
+  mov rax, A1
+  mov [rcx], rax
+  pop rbx
+  mov rax, A0
+  mov [rbx], rax
+  pop rax
+  MAKE_DYNAMIC_PAIR rax, rbx, rcx
+  mov rax, [rax]
+.end:
+  leave
+  ret
+
+prim_equals:
+  push rbp
+  mov rbp, rsp
+  mov rax, SOB_TRUE
+  cmp arg_count, 1
+  jl .false
+  mov rsi, A0
+  mov rbx, rsi
+  TYPE rbx
+  cmp rbx, T_INTEGER
+  je .firs_cont
+.first_not_int:
+  cmp rbx, T_FRACTION
+  jne .false
+.firs_cont:
+  DATA rsi
+  mov rcx, arg_count
+  sub rcx, 1
+  cmp rcx, 0
+  je .end
+.loop:
+  mov rdi, An(rcx)
+  mov rbx, rdi
+  TYPE rbx
+  cmp rbx, T_INTEGER
+  je .k_cont
+.k_not_int:
+  cmp rbx, T_FRACTION
+  jne .false
+.k_cont:
+  DATA rdi
+  cmp rsi, rdi
+  jne .false
+  loop .loop
+  mov rax, SOB_TRUE
+  jmp .end
+.false:
+  mov rax, SOB_FALSE
+.end:
+  leave
+  ret
+
+;; TODO: support fractions
+prim_add:
+  push rbp
+  mov rbp, rsp
+  xor rax, rax
+  cmp arg_count, 0
+  je .end
+  mov rcx, arg_count
+.loop:
+  mov rbx, An(rcx - 1)
+  DATA rbx
+  add rax, rbx
+  loop .loop
+.end:
+  MAKE_LITERAL_FROM_REG T_INTEGER, rax
+  leave
+  ret
+
+;; TODO: support fractions
+prim_mul:
+  push rbp
+  mov rbp, rsp
+  mov rax, 1
+  cmp arg_count, 0
+  je .end
+  mov rcx, arg_count
+.loop:
+  mov rbx, An(rcx - 1)
+  DATA rbx
+  mul rbx
+  loop .loop
+.end:
+  MAKE_LITERAL_FROM_REG T_INTEGER, rax
+  leave
+  ret
+
+;; TODO: support fractions
+prim_sub:
+  push rbp
+  mov rbp, rsp
+  mov rcx, arg_count
+  cmp rcx, 2
+  jl .invalid
+  mov rax, A0
+  DATA rax
+  sub rcx, 1
+.loop:
+  mov rdx, arg_count
+  sub rdx, rcx
+  mov rbx, An(rdx)
+  DATA rbx
+  sub rax, rbx
+  loop .loop
+  MAKE_LITERAL_FROM_REG T_INTEGER, rax
+  jmp .end
+.invalid:
+  mov rax, SOB_UNDEFINED
+.end:
+  leave
+  ret
 
 write_sob_undefined:
 	push rbp
@@ -554,13 +780,28 @@ write_sob_symbol:
 
 	leave
 	ret
-	
+
 write_sob_fraction:
 	push rbp
 	mov rbp, rsp
 
+  mov rax, qword [rbp + 8 + 1*8]
+  mov rbx, rax
+  DATA_UPPER rax
+  DATA_LOWER rbx
+
+  mov rdx, rbx
+  mov rsi, rax
+  mov rdi, .frac_format_string
+  xor rax, rax
+  call printf
+
 	leave
 	ret
+
+section .data
+.frac_format_string:
+	db "%ld/%ld", 0
 
 write_sob_closure:
 	push rbp
