@@ -15,12 +15,9 @@ ASM_FLAGS	:=	-g -f elf64
 	'(load "builtins.scm")' \
 	'(compile-scheme-file "$(MAKECMDGOALS).scm" "$(MAKECMDGOALS).s")' | scheme -q
 	$(ASM) $(ASM_FLAGS) $(MAKECMDGOALS).s -o $(MAKECMDGOALS).o
-	$(CC) $(CC_FLAGS) $(MAKECMDGOALS).o -o $(MAKECMDGOALS)
-
-scheme_original:
-	$(ASM) $(ASM_FLAGS) $@.s -o $@.o
-	$(CC) $(CC_FLAGS) $@.o -o $@
+	$(CC) -c $(CC_FLAGS) util.c -o util.o
+	$(CC) $(CC_FLAGS) $(MAKECMDGOALS).o util.o -o $(MAKECMDGOALS)
 
 .PHONY: clean
 clean:
-	rm test test.s test.o
+	rm test test.s test.o util.o

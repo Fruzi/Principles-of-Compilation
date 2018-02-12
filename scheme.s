@@ -57,6 +57,28 @@
 
 %define MAKE_LITERAL_FRACTION(num, den) ((LITERAL_PAIR_BASE(num, den)) | T_FRACTION)
 
+%macro MAKE_LITERAL_FRACTION_2 2
+  mov rax, %1
+  shl rax, (WORD_SIZE - TYPE_BITS) >> 1
+  or rax, %2
+  shl rax, TYPE_BITS
+  or rax, T_FRACTION
+%endmacro
+
+%define MAKE_LITERAL_SYMBOL(str) (MAKE_LITERAL(T_SYMBOL, (str - start_of_data)))
+
+%macro MAKE_LITERAL_SYMBOL_2 1
+  mov rax, %1
+  sub rax, start_of_data
+  MAKE_LITERAL_2 T_SYMBOL, rax
+%endmacro
+  
+%macro MAKE_LITERAL_2 2
+  mov rax, %2
+  sal rax, TYPE_BITS
+  or rax, %1
+%endmacro
+
 %macro CAR 1
 	DATA_UPPER %1
 	add %1, start_of_data
@@ -209,25 +231,81 @@ endstruc
 
 ;;; MALLOC n -> malloc(8 * n)
 %macro MALLOC 1
-    mov rdi, %1
-    sal rdi, 3
-    call malloc
+  mov rdi, %1
+  sal rdi, 3
+  call malloc
 %endmacro
 
-extern exit, printf, scanf, malloc
+%macro PRIM_TYPE_PRED 1
+	cmp arg_count, 1
+  jne %%false
+  mov rax, A0
+  TYPE rax
+  cmp rax, %1
+  jne %%false
+  mov rax, SOB_TRUE
+  jmp %%end
+
+%%false:
+  mov rax, SOB_FALSE
+%%end:
+  nop
+%endmacro
+
+%macro PAIR_LENGTH 1
+  mov rax, %1
+  xor rcx, rcx
+%%loop:
+  mov rbx, rax
+  CAR rbx
+  cmp rbx, SOB_NIL
+  je %%end
+  inc rcx
+  CDR rax
+  jmp %%loop
+
+%%end:
+  mov rax, rcx
+%endmacro
+
+%macro NUMBER_TO_NUM_DEN 3
+  mov %2, %1
+  TYPE %2
+  cmp %2, T_FRACTION
+  je %%fraction
+  mov %2, %1
+  DATA %2
+  mov %3, 1
+  jmp %%end
+%%fraction:
+  mov %2, %1
+  DATA_UPPER %2
+  mov %3, %1
+  DATA_LOWER %3
+%%end:
+  nop
+%endmacro
+
+extern exit, printf, scanf, malloc, c_gcd, c_divide, c_remainder, c_add_numerator, c_multiply
 global main, write_sob, write_sob_if_not_void
 
 prim_car:
   push rbp
   mov rbp, rsp
+
   cmp arg_count, 1
-  jne .end
+  jne .error
   mov rax, A0
   mov rbx, rax
   TYPE rbx
   cmp rbx, T_PAIR
-  jne .end
+  jne .error
+
   CAR rax
+  jmp .end
+
+.error:
+  mov rax, SOB_NIL
 .end:
   leave
   ret
@@ -235,14 +313,20 @@ prim_car:
 prim_cdr:
   push rbp
   mov rbp, rsp
+
   cmp arg_count, 1
-  jne .end
+  jne .error
   mov rax, A0
   mov rbx, rax
   TYPE rbx
   cmp rbx, T_PAIR
-  jne .end
+  jne .error
+
   CDR rax
+  jmp .end
+
+.error:
+  mov rax, SOB_NIL
 .end:
   leave
   ret
@@ -250,8 +334,10 @@ prim_cdr:
 prim_cons:
   push rbp
   mov rbp, rsp
+
   cmp arg_count, 2
-  jne .end
+  jne .error
+
   MALLOC 1
   push rax
   MALLOC 1
@@ -266,6 +352,10 @@ prim_cons:
   pop rax
   MAKE_DYNAMIC_PAIR rax, rbx, rcx
   mov rax, [rax]
+  jmp .end
+
+.error:
+  mov rax, MAKE_LITERAL(T_PAIR, 0)
 .end:
   leave
   ret
@@ -273,6 +363,7 @@ prim_cons:
 prim_equals:
   push rbp
   mov rbp, rsp
+
   mov rax, SOB_TRUE
   cmp arg_count, 1
   jl .false
@@ -280,23 +371,23 @@ prim_equals:
   mov rbx, rsi
   TYPE rbx
   cmp rbx, T_INTEGER
-  je .firs_cont
-.first_not_int:
+  je .first_cont
   cmp rbx, T_FRACTION
   jne .false
-.firs_cont:
+
+.first_cont:
   DATA rsi
   mov rcx, arg_count
   sub rcx, 1
   cmp rcx, 0
   je .end
+
 .loop:
   mov rdi, An(rcx)
   mov rbx, rdi
   TYPE rbx
   cmp rbx, T_INTEGER
   je .k_cont
-.k_not_int:
   cmp rbx, T_FRACTION
   jne .false
 .k_cont:
@@ -304,6 +395,65 @@ prim_equals:
   cmp rsi, rdi
   jne .false
   loop .loop
+
+  mov rax, SOB_TRUE
+  jmp .end
+
+.false:
+  mov rax, SOB_FALSE
+.end:
+  leave
+  ret
+
+prim_less_than:
+  push rbp
+  mov rbp, rsp
+
+  mov rcx, arg_count
+  cmp rcx, 0
+  je .false
+  cmp rcx, 1
+  je .true
+  mov rbx, A0
+  NUMBER_TO_NUM_DEN rbx, rax, rbx
+  dec rcx
+.loop:
+  push rcx
+  mov rdx, arg_count
+  sub rdx, rcx
+  mov rdi, An(rdx)
+  mov rsi, rdi
+  TYPE rsi
+  cmp rsi, T_INTEGER
+  je .loop_cont
+  cmp rsi, T_FRACTION
+  jne .end
+.loop_cont:
+  NUMBER_TO_NUM_DEN rdi, rsi, rdi
+  push rdi
+  push rsi
+  push rbx
+  push rax
+  mov rdi, [rsp + 8]
+  mov rsi, [rsp + 8 * 2]
+  call c_multiply
+
+  mov rbx, rax
+  mov rdi, [rsp]
+  mov rsi, [rsp + 8 * 3]
+  call c_multiply
+
+  add rsp, 8 * 4
+  cmp rax, rbx
+  jge .false
+
+  mov rax, [rsp - 8 * 2]
+  mov rbx, [rsp - 8]
+  pop rcx
+  dec rcx
+  jnz .loop
+
+.true:
   mov rax, SOB_TRUE
   jmp .end
 .false:
@@ -312,66 +462,787 @@ prim_equals:
   leave
   ret
 
-;; TODO: support fractions
+prim_greater_than:
+  push rbp
+  mov rbp, rsp
+
+  mov rcx, arg_count
+  cmp rcx, 0
+  je .false
+  cmp rcx, 1
+  je .true
+  mov rbx, A0
+  NUMBER_TO_NUM_DEN rbx, rax, rbx
+  dec rcx
+.loop:
+  push rcx
+  mov rdx, arg_count
+  sub rdx, rcx
+  mov rdi, An(rdx)
+  mov rsi, rdi
+  TYPE rsi
+  cmp rsi, T_INTEGER
+  je .loop_cont
+  cmp rsi, T_FRACTION
+  jne .end
+.loop_cont:
+  NUMBER_TO_NUM_DEN rdi, rsi, rdi
+  push rdi
+  push rsi
+  push rbx
+  push rax
+  mov rdi, [rsp + 8]
+  mov rsi, [rsp + 8 * 2]
+  call c_multiply
+
+  mov rbx, rax
+  mov rdi, [rsp]
+  mov rsi, [rsp + 8 * 3]
+  call c_multiply
+
+  add rsp, 8 * 4
+  cmp rax, rbx
+  jle .false
+
+  mov rax, [rsp - 8 * 2]
+  mov rbx, [rsp - 8]
+  pop rcx
+  dec rcx
+  jnz .loop
+
+.true:
+  mov rax, SOB_TRUE
+  jmp .end
+.false:
+  mov rax, SOB_FALSE
+.end:
+  leave
+  ret
+
 prim_add:
   push rbp
   mov rbp, rsp
+
   xor rax, rax
-  cmp arg_count, 0
-  je .end
+  xor rbx, rbx
   mov rcx, arg_count
+  cmp rcx, 0
+  je .int
+  NUMBER_TO_NUM_DEN rbx, rax, rbx
 .loop:
-  mov rbx, An(rcx - 1)
-  DATA rbx
-  add rax, rbx
-  loop .loop
-.end:
+  push rcx
+  mov rdx, arg_count
+  sub rdx, rcx
+  mov rdi, An(rdx)
+  mov rsi, rdi
+  TYPE rsi
+  cmp rsi, T_INTEGER
+  je .loop_cont
+  cmp rsi, T_FRACTION
+  jne .end
+.loop_cont:
+  NUMBER_TO_NUM_DEN rdi, rsi, rdi
+  push rdi
+  push rsi
+  push rbx
+  push rax
+  mov rdi, [rsp + 8 * 1]
+  mov rsi, [rsp + 8 * 3]
+  call c_multiply
+
+  mov rbx, rax
+  mov rdi, [rsp]
+  mov rsi, [rsp + 8 * 1]
+  mov rdx, [rsp + 8 * 2]
+  mov rcx, [rsp + 8 * 3]
+  call c_add_numerator
+  
+  add rsp, 8 * 4
+  pop rcx
+  dec rcx
+  jnz .loop
+
+.loop_end:
+  push rbx
+  push rax
+  mov rdi, rax
+  mov rsi, rbx
+  call c_gcd
+
+  push rax
+  mov rdi, [rsp + 8]
+  mov rsi, [rsp]
+  call c_divide
+
+  push rax
+  mov rdi, [rsp + 8 * 3]
+  mov rsi, [rsp + 8]
+  call c_divide
+
+  mov rbx, rax
+  pop rax
+  add rsp, 8 * 3
+  cmp rbx, 1
+  je .int
+  cmp rbx, -1
+  je .int
+  cmp rbx, 0
+  jl .negative_fraction
+  MAKE_LITERAL_FRACTION_2 rax, rbx
+  jmp .end
+.negative_fraction:
+  neg rax
+  neg rbx
+  MAKE_LITERAL_FRACTION_2 rax, rbx
+  jmp .end
+.int:
   MAKE_LITERAL_FROM_REG T_INTEGER, rax
+.end:
   leave
   ret
 
-;; TODO: support fractions
 prim_mul:
   push rbp
   mov rbp, rsp
+
   mov rax, 1
-  cmp arg_count, 0
-  je .end
+  mov rbx, rax
   mov rcx, arg_count
+  cmp rcx, 0
+  je .int
+  
 .loop:
-  mov rbx, An(rcx - 1)
-  DATA rbx
-  mul rbx
-  loop .loop
-.end:
+  push rcx
+  mov rdx, arg_count
+  sub rdx, rcx
+  mov rdi, An(rdx)
+  mov rsi, rdi
+  TYPE rsi
+  cmp rsi, T_INTEGER
+  je .loop_cont
+  cmp rsi, T_FRACTION
+  jne .end
+.loop_cont:
+  NUMBER_TO_NUM_DEN rdi, rsi, rdi
+  push rdi
+  push rsi
+  push rbx
+  push rax
+  mov rdi, [rsp + 8 * 1]
+  mov rsi, [rsp + 8 * 3]
+  call c_multiply
+
+  mov rbx, rax
+  mov rdi, [rsp]
+  mov rsi, [rsp + 8 * 2]
+  call c_multiply
+
+  add rsp, 8 * 4
+  pop rcx
+  dec rcx
+  jnz .loop
+
+.loop_end:
+  push rbx
+  push rax
+  mov rdi, rax
+  mov rsi, rbx
+  call c_gcd
+
+  push rax
+  mov rdi, [rsp + 8]
+  mov rsi, [rsp]
+  call c_divide
+
+  push rax
+  mov rdi, [rsp + 8 * 3]
+  mov rsi, [rsp + 8]
+  call c_divide
+
+  mov rbx, rax
+  pop rax
+  add rsp, 8 * 3
+  cmp rbx, 1
+  je .int
+  cmp rbx, -1
+  je .negative_int
+  cmp rbx, 0
+  jge .fraction
+  neg rax
+  neg rbx
+.fraction:
+  MAKE_LITERAL_FRACTION_2 rax, rbx
+  jmp .end
+.negative_int:
+  neg rax
+.int:
   MAKE_LITERAL_FROM_REG T_INTEGER, rax
+.end:
   leave
   ret
 
-;; TODO: support fractions
-prim_sub:
+
+; TODO: division
+prim_div:
   push rbp
   mov rbp, rsp
+
+  mov rax, 1
+  mov rbx, rax
   mov rcx, arg_count
-  cmp rcx, 2
-  jl .invalid
-  mov rax, A0
-  DATA rax
-  sub rcx, 1
+  cmp rcx, 1
+  jl .int
+  cmp rcx, 1
+  je .loop
+  mov rbx, A0
+  NUMBER_TO_NUM_DEN rbx, rax, rbx
+  dec rcx
+  
 .loop:
+  push rcx
   mov rdx, arg_count
   sub rdx, rcx
-  mov rbx, An(rdx)
-  DATA rbx
-  sub rax, rbx
-  loop .loop
-  MAKE_LITERAL_FROM_REG T_INTEGER, rax
+  mov rdi, An(rdx)
+  mov rsi, rdi
+  TYPE rsi
+  cmp rsi, T_INTEGER
+  je .loop_cont
+  cmp rsi, T_FRACTION
+  jne .end
+.loop_cont:
+  NUMBER_TO_NUM_DEN rdi, rsi, rdi
+  push rdi
+  push rsi
+  push rbx
+  push rax
+  mov rdi, [rsp + 8]
+  mov rsi, [rsp + 8 * 2]
+  call c_multiply
+
+  mov rbx, rax
+  mov rdi, [rsp]
+  mov rsi, [rsp + 8 * 3]
+  call c_multiply
+
+  add rsp, 8 * 4
+  pop rcx
+  dec rcx
+  jnz .loop
+
+.loop_end:
+  push rbx
+  push rax
+  mov rdi, rax
+  mov rsi, rbx
+  call c_gcd
+
+  push rax
+  mov rdi, [rsp + 8]
+  mov rsi, [rsp]
+  call c_divide
+
+  push rax
+  mov rdi, [rsp + 8 * 3]
+  mov rsi, [rsp + 8]
+  call c_divide
+
+  mov rbx, rax
+  pop rax
+  add rsp, 8 * 3
+  cmp rbx, 1
+  je .int
+  cmp rbx, -1
+  je .negative_int
+  cmp rbx, 0
+  jge .fraction
+  neg rax
+  neg rbx
+.fraction:
+  MAKE_LITERAL_FRACTION_2 rax, rbx
   jmp .end
-.invalid:
-  mov rax, SOB_UNDEFINED
+.negative_int:
+  neg rax
+.int:
+  MAKE_LITERAL_FROM_REG T_INTEGER, rax
 .end:
   leave
   ret
+
+prim_eq:
+	push rbp
+	mov rbp, rsp
+
+	cmp arg_count, 2
+  jne .false
+  mov rax, A0
+  mov rbx, A1
+  cmp rax, rbx
+  jne .false
+  mov rax, SOB_TRUE
+  jmp .end
+
+.false:
+  mov rax, SOB_FALSE
+.end:
+	leave
+	ret
+
+prim_boolean:
+  push rbp
+	mov rbp, rsp
+
+	PRIM_TYPE_PRED T_BOOL
+
+	leave
+	ret
+
+prim_char:
+  push rbp
+	mov rbp, rsp
+
+	PRIM_TYPE_PRED T_CHAR
+
+	leave
+	ret
+
+prim_procedure:
+  push rbp
+	mov rbp, rsp
+
+	PRIM_TYPE_PRED T_CLOSURE
+
+	leave
+	ret
+
+prim_integer:
+  push rbp
+	mov rbp, rsp
+
+	PRIM_TYPE_PRED T_INTEGER
+
+	leave
+	ret
+
+prim_rational:
+  push rbp
+	mov rbp, rsp
+
+	PRIM_TYPE_PRED T_INTEGER
+  cmp rax, SOB_TRUE
+  je .end
+	PRIM_TYPE_PRED T_FRACTION
+.end:
+	leave
+	ret
+
+prim_pair:
+  push rbp
+	mov rbp, rsp
+
+	PRIM_TYPE_PRED T_PAIR
+
+	leave
+	ret
+
+prim_string:
+  push rbp
+	mov rbp, rsp
+
+	PRIM_TYPE_PRED T_STRING
+
+	leave
+	ret
+
+prim_symbol:
+  push rbp
+	mov rbp, rsp
+
+	PRIM_TYPE_PRED T_SYMBOL
+
+	leave
+	ret
+
+prim_vector:
+  push rbp
+	mov rbp, rsp
+
+	PRIM_TYPE_PRED T_VECTOR
+
+	leave
+	ret
+
+prim_integer_to_char:
+  push rbp
+	mov rbp, rsp
+
+	cmp arg_count, 1
+  jne .error
+  mov rax, A0
+  mov rbx, rax
+  TYPE rbx
+  cmp rbx, T_INTEGER
+  jne .error
+  mov rbx, rax
+  DATA rbx
+  cmp rbx, 0
+  jl .error
+  cmp rbx, 256
+  jge .error
+
+  xor rax, T_CHAR ^ T_INTEGER
+  jmp .end
+
+.error:
+  mov rax, MAKE_LITERAL(T_CHAR, -1)
+.end:
+	leave
+	ret
+
+prim_char_to_integer:
+  push rbp
+	mov rbp, rsp
+
+	cmp arg_count, 1
+  jne .error
+  mov rax, A0
+  mov rbx, rax
+  TYPE rbx
+  cmp rbx, T_CHAR
+  jne .error
+  mov rbx, rax
+  DATA rbx
+  cmp rbx, 0
+  jl .error
+  cmp rbx, 256
+  jge .error
+
+  xor rax, T_INTEGER ^ T_CHAR
+  jmp .end
+
+.error:
+  mov rax, MAKE_LITERAL(T_INTEGER, -1)
+.end:
+	leave
+	ret
+
+prim_remainder:
+  push rbp
+	mov rbp, rsp
+
+  cmp arg_count, 2
+  jne .error
+	mov rax, A0
+  mov rbx, rax
+  TYPE rbx
+  cmp rbx, T_INTEGER
+  jne .error
+  mov rax, A1
+  mov rbx, rax
+  TYPE rbx
+  cmp rbx, T_INTEGER
+  jne .error
+
+  xor rax, rax
+  mov rsi, A1
+  DATA rsi
+  mov rdi, A0
+  DATA rdi
+  call c_remainder
+  MAKE_LITERAL_FROM_REG T_INTEGER, rax
+  jmp .end
+
+.error:
+  mov rax, MAKE_LITERAL(T_INTEGER, -1)
+.end:
+	leave
+	ret
+
+prim_numerator:
+	push rbp
+	mov rbp, rsp
+
+	cmp arg_count, 1
+  jne .error
+  mov rax, A0
+  mov rbx, rax
+  TYPE rbx
+  cmp rbx, T_FRACTION
+  jne .integer
+
+  DATA_UPPER rax
+  MAKE_LITERAL_FROM_REG T_INTEGER, rax
+  jmp .end
+
+.integer:
+  mov rbx, rax
+  TYPE rbx
+  cmp rbx, T_INTEGER
+  jne .error
+  DATA rax
+  MAKE_LITERAL_FROM_REG T_INTEGER, rax
+  jmp .end
+
+.error:
+  mov rax, MAKE_LITERAL(T_INTEGER, -1)
+.end:
+	leave
+	ret
+
+prim_denominator:
+	push rbp
+	mov rbp, rsp
+
+	cmp arg_count, 1
+  jne .error
+  mov rax, A0
+  mov rbx, rax
+  TYPE rbx
+  cmp rbx, T_FRACTION
+  jne .integer
+
+  DATA_LOWER rax
+  MAKE_LITERAL_FROM_REG T_INTEGER, rax
+  jmp .end
+
+.integer:
+  mov rbx, rax
+  TYPE rbx
+  cmp rbx, T_INTEGER
+  jne .error
+  mov rax, MAKE_LITERAL(T_INTEGER, 1)
+  jmp .end
+
+.error:
+  mov rax, MAKE_LITERAL(T_INTEGER, -1)
+.end:
+	leave
+	ret
+
+prim_not:
+	push rbp
+	mov rbp, rsp
+
+  cmp arg_count, 1
+  jne .false
+	mov rax, A0
+  cmp rax, SOB_FALSE
+  jne .false
+  mov rax, SOB_TRUE
+  jmp .end
+
+.false:
+  mov rax, SOB_FALSE
+.end:
+	leave
+	ret
+
+prim_string_length:
+	push rbp
+	mov rbp, rsp
+
+  cmp arg_count, 1
+  jne .error
+	mov rax, A0
+  mov rbx, rax
+  TYPE rbx
+  cmp rbx, T_STRING
+  jne .error
+
+  STRING_LENGTH rax
+  MAKE_LITERAL_FROM_REG T_INTEGER, rax
+  jmp .end
+
+.error:
+  mov rax, MAKE_LITERAL(T_INTEGER, -1)
+.end:
+	leave
+	ret
+
+prim_string_ref:
+  push rbp
+	mov rbp, rsp
+
+  cmp arg_count, 2
+  jne .error
+	mov rax, A0
+  mov rbx, rax
+  TYPE rbx
+  cmp rbx, T_STRING
+  jne .error
+  mov rax, A1
+  mov rbx, rax
+  TYPE rbx
+  cmp rbx, T_INTEGER
+  jne .error
+
+  mov rbx, rax
+  DATA rbx
+  mov rax, A0
+  STRING_ELEMENTS rax
+  mov rax, [rax + rbx]
+  MAKE_LITERAL_FROM_REG T_CHAR, rax
+  jmp .end
+
+.error:
+  mov rax, MAKE_LITERAL(T_INTEGER, -1)
+.end:
+	leave
+	ret
+
+prim_vector_length:
+	push rbp
+	mov rbp, rsp
+
+  cmp arg_count, 1
+  jne .error
+	mov rax, A0
+  mov rbx, rax
+  TYPE rbx
+  cmp rbx, T_VECTOR
+  jne .error
+
+  VECTOR_LENGTH rax
+  MAKE_LITERAL_FROM_REG T_INTEGER, rax
+  jmp .end
+
+.error:
+  mov rax, MAKE_LITERAL(T_INTEGER, -1)
+.end:
+	leave
+	ret
+
+prim_vector_ref:
+  push rbp
+	mov rbp, rsp
+
+  cmp arg_count, 2
+  jne .error
+	mov rax, A0
+  mov rbx, rax
+  TYPE rbx
+  cmp rbx, T_VECTOR
+  jne .error
+  mov rax, A1
+  mov rbx, rax
+  TYPE rbx
+  cmp rbx, T_INTEGER
+  jne .error
+
+  mov rbx, rax
+  DATA rbx
+  mov rax, A0
+  VECTOR_ELEMENTS rax
+  mov rax, [rax + 8 * rbx]
+  mov rax, [rax]
+  jmp .end
+
+.error:
+  mov rax, MAKE_LITERAL(T_INTEGER, -1)
+.end:
+	leave
+	ret
+
+prim_apply:
+	push rbp
+	mov rbp, rsp
+
+	cmp arg_count, 2
+  jne .error
+  mov rax, A0
+  TYPE rax
+  cmp rax, T_CLOSURE
+  jne .error
+  mov rax, A1
+  TYPE rax
+  cmp rax, T_PAIR
+  jne .error
+
+  mov rsi, A0
+  mov rdi, A1
+
+  PAIR_LENGTH A1
+  sal rax, 3
+  sub rsp, rax
+  add rsp, 8 * 3
+
+  PAIR_LENGTH A1
+  mov rcx, rax
+  mov rax, ret_addr
+  mov rbx, env
+  mov rbp, old_rbp
+  mov [rsp], rax
+  mov [rsp + 8 * 1], rbx
+  mov [rsp + 8 * 2], rcx
+
+  xor rcx, rcx
+.loop:
+  cmp rdi, SOB_NIL
+  je .end
+  mov rax, rdi
+  CAR rax
+  mov [rsp + 8 * (3 + rcx)], rax
+  inc rcx
+  CDR rdi
+  jmp .loop
+.end:
+  CLOSURE_CODE rsi
+  jmp rsi
+.error:
+  mov rax, SOB_NIL
+	leave
+	ret
+
+prim_symbol_to_string:
+	push rbp
+	mov rbp, rsp
+
+  cmp arg_count, 1
+  jne .error
+  mov rax, A0
+  mov rbx, rax
+  TYPE rbx
+  cmp rbx, T_SYMBOL
+  jne .error
+
+	DATA rax
+  add rax, start_of_data
+  mov rax, [rax]
+  jmp .end
+
+.error:
+  mov rax, .error_sob_str
+.end:
+	leave
+	ret
+
+section .data
+.error_sob_str:
+  MAKE_LITERAL_STRING ""
+
+prim_string_to_symbol:
+	push rbp
+	mov rbp, rsp
+
+  cmp arg_count, 1
+  jne .error
+  mov rax, A0
+  mov rbx, rax
+  TYPE rbx
+  cmp rbx, T_STRING
+  jne .error
+
+  MALLOC 1
+  mov rbx, rax
+	mov rax, A0
+  mov [rbx], rax
+  MAKE_LITERAL_SYMBOL_2 rbx
+  jmp .end
+
+.error:
+  mov rax, MAKE_LITERAL_SYMBOL(start_of_data)
+.end:
+	leave
+	ret
 
 write_sob_undefined:
 	push rbp
@@ -778,8 +1649,39 @@ write_sob_symbol:
 	push rbp
 	mov rbp, rsp
 
+  mov rax, qword [rbp + 8 + 1*8]
+  DATA rax
+  add rax, start_of_data
+  mov rax, [rax]
+  mov rcx, rax
+	STRING_LENGTH rcx
+	STRING_ELEMENTS rax
+
+.loop:
+	cmp rcx, 0
+	je .done
+	mov bl, byte [rax]
+	and rbx, 0xfff
+  mov rdi, .fs_simple_char
+	mov rsi, rbx
+	push rax
+	push rcx
+	mov rax, 0
+	call printf
+	pop rcx
+	pop rax
+
+	dec rcx
+	inc rax
+	jmp .loop
+
+.done:
 	leave
 	ret
+
+section .data
+.fs_simple_char:
+  db "%c", 0
 
 write_sob_fraction:
 	push rbp

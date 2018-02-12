@@ -134,14 +134,16 @@
              (format "~a:\n\tdq SOB_FALSE\t; ~s\n" label value))
             ((integer? value)
              (format "~a:\n\tdq MAKE_LITERAL(T_INTEGER, ~a)\t; ~s\n" label value value))
-            ((and (number? value) (not (integer? value)))
+            ((rational? value)
              (format "~a:\n\tdq MAKE_LITERAL_FRACTION(~a, ~a)\t; ~s\n" label (numerator value) (denominator value) value))
             ((char? value)
              (format "~a:\n\tdq MAKE_LITERAL(T_CHAR, ~a)\t; ~s\n" label (char->integer value) value))
             ((string? value)
              (format "~a:\n\tMAKE_LITERAL_STRING ~s\t; ~s\n" label value value))
             ((symbol? value)
-             (format "~a:\n\tdq MAKE_LITERAL(T_SYMBOL, ~s)\t; ~s\n" label (symbol->string value) value))
+             (string-append
+               (format "~a_str:\n\tMAKE_LITERAL_STRING \"~s\"\t; \"~s\"\n" label value value)
+               (format "~a:\n\tdq MAKE_LITERAL_SYMBOL(~a_str)\t; ~s\n" label label value)))
             ((pair? value)
              (let ((car-label (table-find-label consts-table (car value)))
                    (cdr-label (table-find-label consts-table (cdr value))))
@@ -210,10 +212,35 @@
    (make-table-entry 'car "ProcCar")
    (make-table-entry 'cdr "ProcCdr")
    (make-table-entry 'cons "ProcCons")
+   (make-table-entry 'eq? "ProcEq")
    (make-table-entry '= "ProcEquals")
+   (make-table-entry '< "ProcLessThan")
+   (make-table-entry '> "ProcGreaterThan")
    (make-table-entry '+ "ProcAdd")
-   (make-table-entry '- "ProcSub")
-   (make-table-entry '* "ProcMul")))
+   (make-table-entry '* "ProcMul")
+   (make-table-entry '/ "ProcDiv")
+   (make-table-entry 'boolean? "ProcBoolean")
+   (make-table-entry 'char? "ProcChar")
+   (make-table-entry 'procedure? "ProcProcedure")
+   (make-table-entry 'integer? "ProcInteger")
+   (make-table-entry 'rational? "ProcRational")
+   (make-table-entry 'pair? "ProcPair")
+   (make-table-entry 'string? "ProcString")
+   (make-table-entry 'symbol? "ProcSymbol")
+   (make-table-entry 'vector? "ProcVector")
+   (make-table-entry 'integer->char "ProcIntegerToChar")
+   (make-table-entry 'char->integer "ProcCharToInteger")
+   (make-table-entry 'remainder "ProcRemainder")
+   (make-table-entry 'numerator "ProcNumerator")
+   (make-table-entry 'denominator "ProcDenominator")
+   (make-table-entry 'not "ProcNot")
+   (make-table-entry 'string-length "ProcStringLength")
+   (make-table-entry 'string-ref "ProcStringRef")
+   (make-table-entry 'vector-length "ProcVectorLength")
+   (make-table-entry 'vector-ref "ProcVectorRef")
+   (make-table-entry 'apply "ProcApply")
+   (make-table-entry 'symbol->string "ProcSymbolToString")
+   (make-table-entry 'string->symbol "ProcStringToSymbol")))
 
 (define globals-label-num 0)
 
@@ -224,18 +251,12 @@
 
 (define add-const-entry
   (lambda (value)
-    (if (not (pair? value))
-        (if (vector? value)
-            (begin
-              (for-each add-const-entry (vector->list value))
-              (add-const-if-not-exists! value))
-            (add-const-if-not-exists! value))
-        (begin
-          (if (not (pair? (car value)))
-              (add-const-if-not-exists! (car value))
-              (add-const-entry (car value)))
-          (add-const-entry (cdr value))
-          (add-const-if-not-exists! value)))))
+    (cond ((pair? value)
+           (add-const-entry (car value))
+           (add-const-entry (cdr value)))
+          ((vector? value)
+           (for-each add-const-entry (vector->list value))))
+    (add-const-if-not-exists! value)))
 
 (define build-consts-table
   (lambda (consts)
@@ -280,7 +301,8 @@
     (set! if3-label-index (+ if3-label-index 1))
     (let ((test (cadr pe))
           (dit (caddr pe))
-          (dif (cadddr pe)))
+          (dif (cadddr pe))
+          (if3-label-index if3-label-index))
       (string-append
        (code-gen test)
        "cmp rax, SOB_FALSE\n"
@@ -294,7 +316,8 @@
 (define code-gen-or
   (lambda (pe)
     (set! or-label-index (+ or-label-index 1))
-    (let ((or-pes (cadr pe)))
+    (let ((or-pes (cadr pe))
+          (or-label-index or-label-index))
       (string-append
        (fold-left (lambda (acc curr)
                     (string-append
@@ -449,7 +472,7 @@
         gen))))
 
 (define code-gen-applic-prologue
-  (lambda (proc args)
+  (lambda (proc args applic-label-index)
     (string-append
      (apply string-append
             (map (lambda (arg)
@@ -475,9 +498,10 @@
   (lambda (pe)
     (set! applic-label-index (+ applic-label-index 1))
     (let ((proc (cadr pe))
-          (args (caddr pe)))
+          (args (caddr pe))
+          (applic-label-index applic-label-index))
       (string-append
-       (code-gen-applic-prologue proc args)
+       (code-gen-applic-prologue proc args applic-label-index)
        "CLOSURE_CODE rax\n"
        "call rax\n"
        "mov rbx, post_applic_arg_count\n"
@@ -489,9 +513,10 @@
   (lambda (pe)
     (set! applic-label-index (+ applic-label-index 1))
     (let ((proc (cadr pe))
-          (args (caddr pe)))
+          (args (caddr pe))
+          (applic-label-index applic-label-index))
       (string-append
-       (code-gen-applic-prologue proc args)
+       (code-gen-applic-prologue proc args applic-label-index)
        "mov rdx, arg_count\n"
        "push ret_addr\n"
        "push rax\n"
@@ -570,29 +595,57 @@
 (define asm-prologue
   (lambda (code)
     (append
-     (list
-      "%include 'scheme.s'"
-      "section .data"
-      "start_of_data:"
-      ""
-      (apply string-append (map data-gen-const consts-table))
-      (apply string-append (map data-gen-global globals-table))
-      "section .text"
-      "main:"
-      "push 0"
-      "push 0"
-      "push 0"
-      "push rbp"
-      "mov rbp, rsp"
-      ""
-      "MAKE_LITERAL_CLOSURE ProcCar, 0, prim_car"
-      "MAKE_LITERAL_CLOSURE ProcCdr, 0, prim_cdr"
-      "MAKE_LITERAL_CLOSURE ProcCons, 0, prim_cons"
-      "MAKE_LITERAL_CLOSURE ProcEquals, 0, prim_equals"
-      "MAKE_LITERAL_CLOSURE ProcAdd, 0, prim_add"
-      "MAKE_LITERAL_CLOSURE ProcSub, 0, prim_sub"
-      "MAKE_LITERAL_CLOSURE ProcMul, 0, prim_mul"
-      "")
+      (list
+        "%include 'scheme.s'"
+        ;"section .bss"
+        ;"malloc_pointer:  resq 1"
+        ;"start_of_memory:  resb 1 << 31"
+        "section .data"
+        "start_of_data:"
+        ""
+        (apply string-append (map data-gen-const consts-table))
+        (apply string-append (map data-gen-global globals-table))
+        "section .text"
+        "main:"
+        "push 0"
+        "push 0"
+        "push 0"
+        "push rbp"
+        "mov rbp, rsp"
+        ""
+        "MAKE_LITERAL_CLOSURE ProcCar, 0, prim_car"
+        "MAKE_LITERAL_CLOSURE ProcCdr, 0, prim_cdr"
+        "MAKE_LITERAL_CLOSURE ProcCons, 0, prim_cons"
+        "MAKE_LITERAL_CLOSURE ProcEq, 0, prim_eq"
+        "MAKE_LITERAL_CLOSURE ProcEquals, 0, prim_equals"
+        "MAKE_LITERAL_CLOSURE ProcAdd, 0, prim_add"
+        "MAKE_LITERAL_CLOSURE ProcMul, 0, prim_mul"
+        "MAKE_LITERAL_CLOSURE ProcDiv, 0, prim_div"
+        "MAKE_LITERAL_CLOSURE ProcBoolean, 0, prim_boolean"
+        "MAKE_LITERAL_CLOSURE ProcChar, 0, prim_char"
+        "MAKE_LITERAL_CLOSURE ProcProcedure, 0, prim_procedure"
+        "MAKE_LITERAL_CLOSURE ProcInteger, 0, prim_integer"
+        "MAKE_LITERAL_CLOSURE ProcRational, 0, prim_rational"
+        "MAKE_LITERAL_CLOSURE ProcPair, 0, prim_pair"
+        "MAKE_LITERAL_CLOSURE ProcString, 0, prim_string"
+        "MAKE_LITERAL_CLOSURE ProcSymbol, 0, prim_symbol"
+        "MAKE_LITERAL_CLOSURE ProcVector, 0, prim_vector"
+        "MAKE_LITERAL_CLOSURE ProcIntegerToChar, 0, prim_integer_to_char"
+        "MAKE_LITERAL_CLOSURE ProcCharToInteger, 0, prim_char_to_integer"
+        "MAKE_LITERAL_CLOSURE ProcRemainder, 0, prim_remainder"
+        "MAKE_LITERAL_CLOSURE ProcNumerator, 0, prim_numerator"
+        "MAKE_LITERAL_CLOSURE ProcDenominator, 0, prim_denominator"
+        "MAKE_LITERAL_CLOSURE ProcNot, 0, prim_not"
+        "MAKE_LITERAL_CLOSURE ProcStringLength, 0, prim_string_length"
+        "MAKE_LITERAL_CLOSURE ProcStringRef, 0, prim_string_ref"
+        "MAKE_LITERAL_CLOSURE ProcVectorLength, 0, prim_vector_length"
+        "MAKE_LITERAL_CLOSURE ProcVectorRef, 0, prim_vector_ref"
+        "MAKE_LITERAL_CLOSURE ProcApply, 0, prim_apply"
+        "MAKE_LITERAL_CLOSURE ProcSymbolToString, 0, prim_symbol_to_string"
+        "MAKE_LITERAL_CLOSURE ProcStringToSymbol, 0, prim_string_to_symbol"
+        "MAKE_LITERAL_CLOSURE ProcLessThan, 0, prim_less_than"
+        "MAKE_LITERAL_CLOSURE ProcGreaterThan, 0, prim_greater_than"
+        "")
      code)))
 
 (define asm-epilogue
