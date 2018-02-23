@@ -31,24 +31,33 @@
 ;;; MAKE_LITERAL_FROM_REG type, [register]
 %macro MAKE_LITERAL_FROM_REG 2
   sal %2, TYPE_BITS
-  or rax, %1
+  or %2, %1
 %endmacro
 
 %macro TYPE 1
-	and %1, ((1 << TYPE_BITS) - 1) 
+  and %1, ((1 << TYPE_BITS) - 1) 
 %endmacro
 
 %macro DATA 1
-	sar %1, TYPE_BITS
+  sar %1, TYPE_BITS
 %endmacro
 
 %macro DATA_UPPER 1
-	sar %1, (((WORD_SIZE - TYPE_BITS) >> 1) + TYPE_BITS)
+  shr %1, (((WORD_SIZE - TYPE_BITS) >> 1) + TYPE_BITS)
 %endmacro
 
 %macro DATA_LOWER 1
-	sal %1, ((WORD_SIZE - TYPE_BITS) >> 1)
-	DATA_UPPER %1
+  shl %1, ((WORD_SIZE - TYPE_BITS) >> 1)
+  DATA_UPPER %1
+%endmacro
+
+%macro DATA_UPPER_FRACTION 1
+  sar %1, (((WORD_SIZE - TYPE_BITS) >> 1) + TYPE_BITS)
+%endmacro
+
+%macro DATA_LOWER_FRACTION 1
+  sal %1, ((WORD_SIZE - TYPE_BITS) >> 1)
+  DATA_UPPER %1
 %endmacro
 
 %define LITERAL_PAIR_BASE(car, cdr) (((car << ((WORD_SIZE - TYPE_BITS) >> 1)) | cdr) << TYPE_BITS)
@@ -64,14 +73,6 @@
   shl rax, TYPE_BITS
   or rax, T_FRACTION
 %endmacro
-
-%define MAKE_LITERAL_SYMBOL(str) (MAKE_LITERAL(T_SYMBOL, (str - start_of_data)))
-
-%macro MAKE_LITERAL_SYMBOL_2 1
-  mov rax, %1
-  sub rax, start_of_data
-  MAKE_LITERAL_2 T_SYMBOL, rax
-%endmacro
   
 %macro MAKE_LITERAL_2 2
   mov rax, %2
@@ -80,98 +81,123 @@
 %endmacro
 
 %macro CAR 1
-	DATA_UPPER %1
-	add %1, start_of_data
-	mov %1, qword [%1]
+  DATA_UPPER %1
+  add %1, start_of_data
 %endmacro
 
 %macro CDR 1
-	DATA_LOWER %1
-	add %1, start_of_data
-	mov %1, qword [%1]
+  DATA_LOWER %1
+  add %1, start_of_data
 %endmacro
 
 ;;; MAKE_LITERAL_CLOSURE target, env, code
 %macro MAKE_LITERAL_CLOSURE 3
-	push rax
-	push rbx
-	mov rax, %1
+  push rax
+  push rbx
+  mov rax, %1
   mov rbx, %2
   sub rbx, start_of_data
-	mov qword [rax], rbx
-	shl qword [rax], ((WORD_SIZE - TYPE_BITS) >> 1)
-	lea rbx, [rax + 8]
+  mov qword [rax], rbx
+  shl qword [rax], ((WORD_SIZE - TYPE_BITS) >> 1)
+  lea rbx, [rax + 8]
   sub rbx, start_of_data
-	or qword [rax], rbx
-	shl qword [rax], TYPE_BITS
-	or qword [rax], T_CLOSURE
-	mov qword [rax + 8], %3
-	pop rbx
-	pop rax
+  or qword [rax], rbx
+  shl qword [rax], TYPE_BITS
+  or qword [rax], T_CLOSURE
+  mov qword [rax + 8], %3
+  pop rbx
+  pop rax
+%endmacro
+
+;;; MAKE_INITIAL_CLOSURE target, code
+%macro MAKE_INITIAL_CLOSURE 2
+  xor rax, rax
+  MAKE_LITERAL_CLOSURE %1, rax, %2
 %endmacro
 
 %macro CLOSURE_ENV 1
-	DATA_UPPER %1
-	add %1, start_of_data
+  DATA_UPPER %1
+  add %1, start_of_data
 %endmacro
 
 %macro CLOSURE_CODE 1
-	DATA_LOWER %1
-	add %1, start_of_data
-	mov %1, qword [%1]
+  DATA_LOWER %1
+  add %1, start_of_data
+  mov %1, qword [%1]
 %endmacro
 
 %macro MAKE_LITERAL_STRING 1+
-	dq (((((%%LstrEnd - %%Lstr) << ((WORD_SIZE - TYPE_BITS) >> 1)) | (%%Lstr - start_of_data)) << TYPE_BITS) | T_STRING)
-	%%Lstr:
-	db %1
-	%%LstrEnd:
+  dq (((((%%LstrEnd - %%Lstr) << ((WORD_SIZE - TYPE_BITS) >> 1)) | (%%Lstr - start_of_data)) << TYPE_BITS) | T_STRING)
+  %%Lstr:
+  db %1
+  %%LstrEnd:
+%endmacro
+
+%macro MAKE_EMPTY_STRING 0
+  dq ((((%%Lstr - start_of_data)) << TYPE_BITS) | T_STRING)
+  %%Lstr:
+  db 0
+  %%LstrEnd:
 %endmacro
 
 %macro STRING_LENGTH 1
-	DATA_UPPER %1
+  DATA_UPPER %1
 %endmacro
 
 %macro STRING_ELEMENTS 1
-	DATA_LOWER %1
-	add %1, start_of_data
+  DATA_LOWER %1
+  add %1, start_of_data
 %endmacro
 
 ;;; STRING_REF dest, src, index
 ;;; dest cannot be RAX! (fix this!)
 %macro STRING_REF 3
-	push rax
-	mov rax, %2
-	STRING_ELEMENTS rax
-	add rax, %3
-	mov %1, byte [rax]
-	pop rax
+  push rax
+  mov rax, %2
+  STRING_ELEMENTS rax
+  add rax, %3
+  mov %1, byte [rax]
+  pop rax
 %endmacro
 
 %macro MAKE_LITERAL_VECTOR 1+
-	dq ((((((%%VecEnd - %%Vec) >> 3) << ((WORD_SIZE - TYPE_BITS) >> 1)) | (%%Vec - start_of_data)) << TYPE_BITS) | T_VECTOR)
-	%%Vec:
-	dq %1
-	%%VecEnd:
+  dq ((((((%%VecEnd - %%Vec) >> 3) << ((WORD_SIZE - TYPE_BITS) >> 1)) | (%%Vec - start_of_data)) << TYPE_BITS) | T_VECTOR)
+  %%Vec:
+  dq %1
+  %%VecEnd:
+%endmacro
+
+%macro MAKE_EMPTY_VECTOR 0
+  dq ((((%%Vec - start_of_data)) << TYPE_BITS) | T_VECTOR)
+  %%Vec:
+  dq 0
+  %%VecEnd:
 %endmacro
 
 %macro VECTOR_LENGTH 1
-	DATA_UPPER %1
+  DATA_UPPER %1
 %endmacro
 
 %macro VECTOR_ELEMENTS 1
-	DATA_LOWER %1
-	add %1, start_of_data
+  DATA_LOWER %1
+  add %1, start_of_data
 %endmacro
 
 ;;; VECTOR_REF dest, src, index
 ;;; dest cannot be RAX! (fix this!)
 %macro VECTOR_REF 3
-	mov %1, %2
-	VECTOR_ELEMENTS %1
-	lea %1, [%1 + %3*8]
-	mov %1, qword [%1]
-	mov %1, qword [%1]
+  mov %1, %2
+  VECTOR_ELEMENTS %1
+  lea %1, [%1 + %3*8]
+  mov %1, qword [%1]
+  mov %1, qword [%1]
+%endmacro
+
+%macro MAKE_LITERAL_SYMBOL 1+
+  dq (((((%%LstrEnd - %%Lstr) << ((WORD_SIZE - TYPE_BITS) >> 1)) | (%%Lstr - start_of_data)) << TYPE_BITS) | T_SYMBOL)
+  %%Lstr:
+  db %1
+  %%LstrEnd:
 %endmacro
 
 %define SOB_UNDEFINED MAKE_LITERAL(T_UNDEFINED, 0)
@@ -182,19 +208,19 @@
 
 ;;; MAKE_DYNAMIC_PAIR target-addrees, car-addrees, cdr-addrees
 %macro MAKE_DYNAMIC_PAIR 3
-    push rax 
-    push rbx 
-    mov rax, %1 
+    push rax
+    push rbx
+    mov rax, %1
     mov qword [rax], %2
     sub qword [rax], start_of_data
-    shl qword [rax], ((WORD_SIZE - TYPE_BITS) >> 1) 
-    mov rbx, %3 
+    shl qword [rax], ((WORD_SIZE - TYPE_BITS) >> 1)
+    mov rbx, %3
     sub rbx, start_of_data
-    or qword [rax], rbx 
-    shl qword [rax], TYPE_BITS 
-    or qword [rax], T_PAIR 
-    pop rbx 
-    pop rax 
+    or qword [rax], rbx
+    shl qword [rax], TYPE_BITS
+    or qword [rax], T_PAIR
+    pop rbx
+    pop rax
 %endmacro
 
 ;;; Simple frame access
@@ -236,34 +262,57 @@ endstruc
   call malloc
 %endmacro
 
+;;; MALLOC_2 n -> malloc(n)
+%macro MALLOC_2 1
+  mov rdi, %1
+  call malloc
+%endmacro
+
+;; Uses rax and rbx
+%macro MAKE_POINTER 1
+  push %1
+  MALLOC 1
+  pop rbx
+  mov [rax], rbx
+%endmacro
+
 %macro PRIM_TYPE_PRED 1
-	cmp arg_count, 1
+  cmp arg_count, 1
   jne %%false
   mov rax, A0
+  mov rax, [rax]
   TYPE rax
   cmp rax, %1
   jne %%false
-  mov rax, SOB_TRUE
+  lea rax, [SobTrue]
   jmp %%end
 
 %%false:
-  mov rax, SOB_FALSE
+  lea rax, [SobFalse]
 %%end:
   nop
 %endmacro
 
 %macro PAIR_LENGTH 1
   mov rax, %1
+  mov rbx, [rax]
+  TYPE rbx
+  cmp rbx, T_NIL
+  je %%nil
   xor rcx, rcx
 %%loop:
+  mov rax, [rax]
   mov rbx, rax
   CAR rbx
-  cmp rbx, SOB_NIL
+  cmp rbx, qword SobNil
   je %%end
   inc rcx
   CDR rax
   jmp %%loop
+  jmp %%end
 
+%%nil:
+  xor rcx, rcx
 %%end:
   mov rax, rcx
 %endmacro
@@ -279,9 +328,9 @@ endstruc
   jmp %%end
 %%fraction:
   mov %2, %1
-  DATA_UPPER %2
+  DATA_UPPER_FRACTION %2
   mov %3, %1
-  DATA_LOWER %3
+  DATA_LOWER_FRACTION %3
 %%end:
   nop
 %endmacro
@@ -296,6 +345,7 @@ prim_car:
   cmp arg_count, 1
   jne .error
   mov rax, A0
+  mov rax, [rax]
   mov rbx, rax
   TYPE rbx
   cmp rbx, T_PAIR
@@ -305,7 +355,7 @@ prim_car:
   jmp .end
 
 .error:
-  mov rax, SOB_NIL
+  lea rax, [SobVoid]
 .end:
   leave
   ret
@@ -317,6 +367,7 @@ prim_cdr:
   cmp arg_count, 1
   jne .error
   mov rax, A0
+  mov rax, [rax]
   mov rbx, rax
   TYPE rbx
   cmp rbx, T_PAIR
@@ -326,7 +377,7 @@ prim_cdr:
   jmp .end
 
 .error:
-  mov rax, SOB_NIL
+  lea rax, [SobVoid]
 .end:
   leave
   ret
@@ -339,23 +390,13 @@ prim_cons:
   jne .error
 
   MALLOC 1
-  push rax
-  MALLOC 1
-  push rax
-  MALLOC 1
-  mov rcx, rax
-  mov rax, A1
-  mov [rcx], rax
-  pop rbx
-  mov rax, A0
-  mov [rbx], rax
-  pop rax
+  mov rbx, A0
+  mov rcx, A1
   MAKE_DYNAMIC_PAIR rax, rbx, rcx
-  mov rax, [rax]
   jmp .end
 
 .error:
-  mov rax, MAKE_LITERAL(T_PAIR, 0)
+  lea rax, [SobVoid]
 .end:
   leave
   ret
@@ -364,10 +405,11 @@ prim_equals:
   push rbp
   mov rbp, rsp
 
-  mov rax, SOB_TRUE
+  lea rax, [SobTrue]
   cmp arg_count, 1
   jl .false
   mov rsi, A0
+  mov rsi, [rsi]
   mov rbx, rsi
   TYPE rbx
   cmp rbx, T_INTEGER
@@ -384,6 +426,7 @@ prim_equals:
 
 .loop:
   mov rdi, An(rcx)
+  mov rdi, [rdi]
   mov rbx, rdi
   TYPE rbx
   cmp rbx, T_INTEGER
@@ -396,11 +439,11 @@ prim_equals:
   jne .false
   loop .loop
 
-  mov rax, SOB_TRUE
+  lea rax, [SobTrue]
   jmp .end
 
 .false:
-  mov rax, SOB_FALSE
+  lea rax, [SobFalse]
 .end:
   leave
   ret
@@ -415,6 +458,7 @@ prim_less_than:
   cmp rcx, 1
   je .true
   mov rbx, A0
+  mov rbx, [rbx]
   NUMBER_TO_NUM_DEN rbx, rax, rbx
   dec rcx
 .loop:
@@ -422,6 +466,7 @@ prim_less_than:
   mov rdx, arg_count
   sub rdx, rcx
   mov rdi, An(rdx)
+  mov rdi, [rdi]
   mov rsi, rdi
   TYPE rsi
   cmp rsi, T_INTEGER
@@ -454,10 +499,10 @@ prim_less_than:
   jnz .loop
 
 .true:
-  mov rax, SOB_TRUE
+  lea rax, [SobTrue]
   jmp .end
 .false:
-  mov rax, SOB_FALSE
+  lea rax, [SobFalse]
 .end:
   leave
   ret
@@ -472,6 +517,7 @@ prim_greater_than:
   cmp rcx, 1
   je .true
   mov rbx, A0
+  mov rbx, [rbx]
   NUMBER_TO_NUM_DEN rbx, rax, rbx
   dec rcx
 .loop:
@@ -479,6 +525,7 @@ prim_greater_than:
   mov rdx, arg_count
   sub rdx, rcx
   mov rdi, An(rdx)
+  mov rdi, [rdi]
   mov rsi, rdi
   TYPE rsi
   cmp rsi, T_INTEGER
@@ -511,10 +558,10 @@ prim_greater_than:
   jnz .loop
 
 .true:
-  mov rax, SOB_TRUE
+  lea rax, [SobTrue]
   jmp .end
 .false:
-  mov rax, SOB_FALSE
+  lea rax, [SobFalse]
 .end:
   leave
   ret
@@ -534,6 +581,7 @@ prim_add:
   mov rdx, arg_count
   sub rdx, rcx
   mov rdi, An(rdx)
+  mov rdi, [rdi]
   mov rsi, rdi
   TYPE rsi
   cmp rsi, T_INTEGER
@@ -589,14 +637,17 @@ prim_add:
   cmp rbx, 0
   jl .negative_fraction
   MAKE_LITERAL_FRACTION_2 rax, rbx
+  MAKE_POINTER rax
   jmp .end
 .negative_fraction:
   neg rax
   neg rbx
   MAKE_LITERAL_FRACTION_2 rax, rbx
+  MAKE_POINTER rax
   jmp .end
 .int:
   MAKE_LITERAL_FROM_REG T_INTEGER, rax
+  MAKE_POINTER rax
 .end:
   leave
   ret
@@ -616,6 +667,7 @@ prim_mul:
   mov rdx, arg_count
   sub rdx, rcx
   mov rdi, An(rdx)
+  mov rdi, [rdi]
   mov rsi, rdi
   TYPE rsi
   cmp rsi, T_INTEGER
@@ -672,11 +724,13 @@ prim_mul:
   neg rbx
 .fraction:
   MAKE_LITERAL_FRACTION_2 rax, rbx
+  MAKE_POINTER rax
   jmp .end
 .negative_int:
   neg rax
 .int:
   MAKE_LITERAL_FROM_REG T_INTEGER, rax
+  MAKE_POINTER rax
 .end:
   leave
   ret
@@ -695,6 +749,7 @@ prim_div:
   cmp rcx, 1
   je .loop
   mov rbx, A0
+  mov rbx, [rbx]
   NUMBER_TO_NUM_DEN rbx, rax, rbx
   dec rcx
   
@@ -703,6 +758,7 @@ prim_div:
   mov rdx, arg_count
   sub rdx, rcx
   mov rdi, An(rdx)
+  mov rdi, [rdi]
   mov rsi, rdi
   TYPE rsi
   cmp rsi, T_INTEGER
@@ -759,125 +815,179 @@ prim_div:
   neg rbx
 .fraction:
   MAKE_LITERAL_FRACTION_2 rax, rbx
+  MAKE_POINTER rax
   jmp .end
 .negative_int:
   neg rax
 .int:
   MAKE_LITERAL_FROM_REG T_INTEGER, rax
+  MAKE_POINTER rax
 .end:
   leave
   ret
 
 prim_eq:
-	push rbp
-	mov rbp, rsp
+  push rbp
+  mov rbp, rsp
 
-	cmp arg_count, 2
+  cmp arg_count, 2
   jne .false
+
   mov rax, A0
   mov rbx, A1
+
+  cmp rax, rbx
+  je .true
+
+  mov rcx, [rax]
+  TYPE rcx
+  cmp rcx, T_SYMBOL
+  jne .not_sym
+  mov rcx, [rbx]
+  TYPE rcx
+  cmp rcx, T_SYMBOL
+  jne .not_sym
+
+  mov rsi, [rax]
+  mov rdi, [rbx]
+  mov rax, rsi
+  mov rbx, rdi
+  STRING_LENGTH rax
+  STRING_LENGTH rbx
   cmp rax, rbx
   jne .false
-  mov rax, SOB_TRUE
-  jmp .end
+  mov rcx, rax
+  STRING_ELEMENTS rsi
+  STRING_ELEMENTS rdi
+  xor rax, rax
+  xor rbx, rbx
+.str_cmp_loop:
+  mov al, [rsi + (rcx - 1)]
+  mov bl, [rdi + (rcx - 1)]
+  cmp al, bl
+  jne .false
+  loop .str_cmp_loop
 
+  jmp .true
+
+.not_sym:
+  mov rcx, [rax]
+  TYPE rcx
+  mov rdx, [rbx]
+  TYPE rdx
+  cmp rcx, rdx
+  jne .false
+  cmp rcx, T_PAIR
+  je .false
+  mov rax, [rax]
+  mov rbx, [rbx]
+  cmp rax, rbx
+  jne .false
+
+.true:
+  lea rax, [SobTrue]
+  jmp .end
 .false:
-  mov rax, SOB_FALSE
+  lea rax, [SobFalse]
 .end:
-	leave
-	ret
+  leave
+  ret
+
+section .data
+.fmt_ptr: db "%p", 10, 0
 
 prim_boolean:
   push rbp
-	mov rbp, rsp
+  mov rbp, rsp
 
-	PRIM_TYPE_PRED T_BOOL
+  PRIM_TYPE_PRED T_BOOL
 
-	leave
-	ret
+  leave
+  ret
 
 prim_char:
   push rbp
-	mov rbp, rsp
+  mov rbp, rsp
 
-	PRIM_TYPE_PRED T_CHAR
+  PRIM_TYPE_PRED T_CHAR
 
-	leave
-	ret
+  leave
+  ret
 
 prim_procedure:
   push rbp
-	mov rbp, rsp
+  mov rbp, rsp
 
-	PRIM_TYPE_PRED T_CLOSURE
+  PRIM_TYPE_PRED T_CLOSURE
 
-	leave
-	ret
+  leave
+  ret
 
 prim_integer:
   push rbp
-	mov rbp, rsp
+  mov rbp, rsp
 
-	PRIM_TYPE_PRED T_INTEGER
+  PRIM_TYPE_PRED T_INTEGER
 
-	leave
-	ret
+  leave
+  ret
 
 prim_rational:
   push rbp
-	mov rbp, rsp
+  mov rbp, rsp
 
-	PRIM_TYPE_PRED T_INTEGER
-  cmp rax, SOB_TRUE
+  PRIM_TYPE_PRED T_INTEGER
+  cmp rax, qword SobTrue
   je .end
-	PRIM_TYPE_PRED T_FRACTION
+  PRIM_TYPE_PRED T_FRACTION
 .end:
-	leave
-	ret
+  leave
+  ret
 
 prim_pair:
   push rbp
-	mov rbp, rsp
+  mov rbp, rsp
 
-	PRIM_TYPE_PRED T_PAIR
+  PRIM_TYPE_PRED T_PAIR
 
-	leave
-	ret
+  leave
+  ret
 
 prim_string:
   push rbp
-	mov rbp, rsp
+  mov rbp, rsp
 
-	PRIM_TYPE_PRED T_STRING
+  PRIM_TYPE_PRED T_STRING
 
-	leave
-	ret
+  leave
+  ret
 
 prim_symbol:
   push rbp
-	mov rbp, rsp
+  mov rbp, rsp
 
-	PRIM_TYPE_PRED T_SYMBOL
+  PRIM_TYPE_PRED T_SYMBOL
 
-	leave
-	ret
+  leave
+  ret
 
-prim_vector:
+prim_vector_q:
   push rbp
-	mov rbp, rsp
+  mov rbp, rsp
 
-	PRIM_TYPE_PRED T_VECTOR
+  PRIM_TYPE_PRED T_VECTOR
 
-	leave
-	ret
+  leave
+  ret
 
 prim_integer_to_char:
   push rbp
-	mov rbp, rsp
+  mov rbp, rsp
 
-	cmp arg_count, 1
+  cmp arg_count, 1
   jne .error
   mov rax, A0
+  mov rax, [rax]
   mov rbx, rax
   TYPE rbx
   cmp rbx, T_INTEGER
@@ -886,25 +996,25 @@ prim_integer_to_char:
   DATA rbx
   cmp rbx, 0
   jl .error
-  cmp rbx, 256
-  jge .error
 
   xor rax, T_CHAR ^ T_INTEGER
+  MAKE_POINTER rax
   jmp .end
 
 .error:
-  mov rax, MAKE_LITERAL(T_CHAR, -1)
+  lea rax, [SobVoid]
 .end:
-	leave
-	ret
+  leave
+  ret
 
 prim_char_to_integer:
   push rbp
-	mov rbp, rsp
+  mov rbp, rsp
 
-	cmp arg_count, 1
+  cmp arg_count, 1
   jne .error
   mov rax, A0
+  mov rax, [rax]
   mov rbx, rax
   TYPE rbx
   cmp rbx, T_CHAR
@@ -913,30 +1023,31 @@ prim_char_to_integer:
   DATA rbx
   cmp rbx, 0
   jl .error
-  cmp rbx, 256
-  jge .error
 
   xor rax, T_INTEGER ^ T_CHAR
+  MAKE_POINTER rax
   jmp .end
 
 .error:
-  mov rax, MAKE_LITERAL(T_INTEGER, -1)
+  lea rax, [SobVoid]
 .end:
-	leave
-	ret
+  leave
+  ret
 
 prim_remainder:
   push rbp
-	mov rbp, rsp
+  mov rbp, rsp
 
   cmp arg_count, 2
   jne .error
-	mov rax, A0
+  mov rax, A0
+  mov rax, [rax]
   mov rbx, rax
   TYPE rbx
   cmp rbx, T_INTEGER
   jne .error
   mov rax, A1
+  mov rax, [rax]
   mov rbx, rax
   TYPE rbx
   cmp rbx, T_INTEGER
@@ -944,33 +1055,38 @@ prim_remainder:
 
   xor rax, rax
   mov rsi, A1
+  mov rsi, [rsi]
   DATA rsi
   mov rdi, A0
+  mov rdi, [rdi]
   DATA rdi
   call c_remainder
   MAKE_LITERAL_FROM_REG T_INTEGER, rax
+  MAKE_POINTER rax
   jmp .end
 
 .error:
-  mov rax, MAKE_LITERAL(T_INTEGER, -1)
+  lea rax, [SobVoid]
 .end:
-	leave
-	ret
+  leave
+  ret
 
 prim_numerator:
-	push rbp
-	mov rbp, rsp
+  push rbp
+  mov rbp, rsp
 
-	cmp arg_count, 1
+  cmp arg_count, 1
   jne .error
   mov rax, A0
+  mov rax, [rax]
   mov rbx, rax
   TYPE rbx
   cmp rbx, T_FRACTION
   jne .integer
 
-  DATA_UPPER rax
+  DATA_UPPER_FRACTION rax
   MAKE_LITERAL_FROM_REG T_INTEGER, rax
+  MAKE_POINTER rax
   jmp .end
 
 .integer:
@@ -980,28 +1096,31 @@ prim_numerator:
   jne .error
   DATA rax
   MAKE_LITERAL_FROM_REG T_INTEGER, rax
+  MAKE_POINTER rax
   jmp .end
 
 .error:
-  mov rax, MAKE_LITERAL(T_INTEGER, -1)
+  lea rax, [SobVoid]
 .end:
-	leave
-	ret
+  leave
+  ret
 
 prim_denominator:
-	push rbp
-	mov rbp, rsp
+  push rbp
+  mov rbp, rsp
 
-	cmp arg_count, 1
+  cmp arg_count, 1
   jne .error
   mov rax, A0
+  mov rax, [rax]
   mov rbx, rax
   TYPE rbx
   cmp rbx, T_FRACTION
   jne .integer
 
-  DATA_LOWER rax
+  DATA_LOWER_FRACTION rax
   MAKE_LITERAL_FROM_REG T_INTEGER, rax
+  MAKE_POINTER rax
   jmp .end
 
 .integer:
@@ -1010,39 +1129,41 @@ prim_denominator:
   cmp rbx, T_INTEGER
   jne .error
   mov rax, MAKE_LITERAL(T_INTEGER, 1)
+  MAKE_POINTER rax
   jmp .end
 
 .error:
-  mov rax, MAKE_LITERAL(T_INTEGER, -1)
+  lea rax, [SobVoid]
 .end:
-	leave
-	ret
+  leave
+  ret
 
 prim_not:
-	push rbp
-	mov rbp, rsp
+  push rbp
+  mov rbp, rsp
 
   cmp arg_count, 1
   jne .false
-	mov rax, A0
-  cmp rax, SOB_FALSE
+  mov rax, A0
+  cmp rax, qword SobFalse
   jne .false
-  mov rax, SOB_TRUE
+  lea rax, [SobTrue]
   jmp .end
 
 .false:
-  mov rax, SOB_FALSE
+  lea rax, [SobFalse]
 .end:
-	leave
-	ret
+  leave
+  ret
 
 prim_string_length:
-	push rbp
-	mov rbp, rsp
+  push rbp
+  mov rbp, rsp
 
   cmp arg_count, 1
   jne .error
-	mov rax, A0
+  mov rax, A0
+  mov rax, [rax]
   mov rbx, rax
   TYPE rbx
   cmp rbx, T_STRING
@@ -1050,26 +1171,29 @@ prim_string_length:
 
   STRING_LENGTH rax
   MAKE_LITERAL_FROM_REG T_INTEGER, rax
+  MAKE_POINTER rax
   jmp .end
 
 .error:
-  mov rax, MAKE_LITERAL(T_INTEGER, -1)
+  lea rax, [SobVoid]
 .end:
-	leave
-	ret
+  leave
+  ret
 
 prim_string_ref:
   push rbp
-	mov rbp, rsp
+  mov rbp, rsp
 
   cmp arg_count, 2
   jne .error
-	mov rax, A0
+  mov rax, A0
+  mov rax, [rax]
   mov rbx, rax
   TYPE rbx
   cmp rbx, T_STRING
   jne .error
   mov rax, A1
+  mov rax, [rax]
   mov rbx, rax
   TYPE rbx
   cmp rbx, T_INTEGER
@@ -1078,24 +1202,169 @@ prim_string_ref:
   mov rbx, rax
   DATA rbx
   mov rax, A0
+  mov rax, [rax]
   STRING_ELEMENTS rax
   mov rax, [rax + rbx]
+  and rax, 0xFF
   MAKE_LITERAL_FROM_REG T_CHAR, rax
+  MAKE_POINTER rax
   jmp .end
 
 .error:
-  mov rax, MAKE_LITERAL(T_INTEGER, -1)
+  lea rax, [SobVoid]
 .end:
-	leave
-	ret
+  leave
+  ret
+
+prim_string_set:
+  push rbp
+  mov rbp, rsp
+
+  cmp arg_count, 3
+  jne .end
+  mov rax, A0
+  mov rax, [rax]
+  mov rbx, rax
+  TYPE rbx
+  cmp rbx, T_STRING
+  jne .end
+  mov rax, A1
+  mov rax, [rax]
+  mov rbx, rax
+  TYPE rbx
+  cmp rbx, T_INTEGER
+  jne .end
+  mov rax, A2
+  mov rax, [rax]
+  mov rbx, rax
+  TYPE rbx
+  cmp rbx, T_CHAR
+  jne .end
+
+  mov rcx, rax
+  DATA rcx
+  mov rbx, A1
+  mov rbx, [rbx]
+  DATA rbx
+  mov rax, A0
+  mov rax, [rax]
+  STRING_ELEMENTS rax
+  mov [rax + rbx], cl
+
+.end:
+  lea rax, [SobVoid]
+  leave
+  ret
+
+prim_make_string:
+  push rbp
+  mov rbp, rsp
+
+  cmp arg_count, 3
+  jge .error
+  cmp arg_count, 1
+  jl .error
+  mov rax, A0
+  mov rax, [rax]
+  mov rbx, rax
+  TYPE rbx
+  cmp rbx, T_INTEGER
+  jne .error
+  cmp arg_count, 2
+  jl .cont
+  mov rax, A1
+  mov rax, [rax]
+  mov rbx, rax
+  TYPE rbx
+  cmp rbx, T_CHAR
+  jne .error
+  
+.cont:
+  mov rbx, A0
+  mov rbx, [rbx]
+  DATA rbx
+  push rbx
+  MALLOC_2 rbx
+  mov rbx, rax
+  pop rcx
+
+  mov rax, rcx
+  shl rax, ((WORD_SIZE - TYPE_BITS) >> 1)
+
+  mov rdx, rbx
+  sub rdx, start_of_data
+  or rax, rdx
+  shl rax, TYPE_BITS
+  or rax, T_STRING
+
+  cmp rcx, 0
+  je .loop_end
+  xor rdx, rdx
+  cmp arg_count, 2
+  jl .loop
+  mov rdx, A1
+  mov rdx, [rdx]
+  DATA rdx
+
+.loop:
+  mov [rbx + rcx - 1], dl
+  loop .loop
+.loop_end:
+  MAKE_POINTER rax
+  jmp .end
+
+.error:
+  lea rax, [SobVoid]
+.end:
+  leave
+  ret
+
+prim_vector:
+  push rbp
+  mov rbp, rsp
+
+  MALLOC arg_count
+  mov rbx, rax
+
+  mov rcx, arg_count
+  mov rax, rcx
+  shl rax, ((WORD_SIZE - TYPE_BITS) >> 1)
+
+  mov rdx, rbx
+  sub rdx, start_of_data
+  or rax, rdx
+  shl rax, TYPE_BITS
+  or rax, T_VECTOR
+
+  cmp rcx, 0
+  je .loop_end
+  xor rcx, rcx
+
+.loop:
+  cmp rcx, arg_count
+  je .loop_end
+  mov rdx, An(rcx)
+  mov [rbx + 8 * rcx], rdx
+  inc rcx
+  jmp .loop
+.loop_end:
+  MAKE_POINTER rax
+  jmp .end
+
+.error:
+  lea rax, [SobVoid]
+.end:
+  leave
+  ret
 
 prim_vector_length:
-	push rbp
-	mov rbp, rsp
+  push rbp
+  mov rbp, rsp
 
   cmp arg_count, 1
   jne .error
-	mov rax, A0
+  mov rax, A0
+  mov rax, [rax]
   mov rbx, rax
   TYPE rbx
   cmp rbx, T_VECTOR
@@ -1103,26 +1372,29 @@ prim_vector_length:
 
   VECTOR_LENGTH rax
   MAKE_LITERAL_FROM_REG T_INTEGER, rax
+  MAKE_POINTER rax
   jmp .end
 
 .error:
-  mov rax, MAKE_LITERAL(T_INTEGER, -1)
+  lea rax, [SobVoid]
 .end:
-	leave
-	ret
+  leave
+  ret
 
 prim_vector_ref:
   push rbp
-	mov rbp, rsp
+  mov rbp, rsp
 
   cmp arg_count, 2
   jne .error
-	mov rax, A0
+  mov rax, A0
+  mov rax, [rax]
   mov rbx, rax
   TYPE rbx
   cmp rbx, T_VECTOR
   jne .error
   mov rax, A1
+  mov rax, [rax]
   mov rbx, rax
   TYPE rbx
   cmp rbx, T_INTEGER
@@ -1131,44 +1403,134 @@ prim_vector_ref:
   mov rbx, rax
   DATA rbx
   mov rax, A0
+  mov rax, [rax]
   VECTOR_ELEMENTS rax
   mov rax, [rax + 8 * rbx]
-  mov rax, [rax]
   jmp .end
 
 .error:
-  mov rax, MAKE_LITERAL(T_INTEGER, -1)
+  lea rax, [SobVoid]
 .end:
-	leave
-	ret
+  leave
+  ret
+
+prim_vector_set:
+  push rbp
+  mov rbp, rsp
+
+  cmp arg_count, 3
+  jne .end
+  mov rax, A0
+  mov rax, [rax]
+  mov rbx, rax
+  TYPE rbx
+  cmp rbx, T_VECTOR
+  jne .end
+  mov rax, A1
+  mov rax, [rax]
+  mov rbx, rax
+  TYPE rbx
+  cmp rbx, T_INTEGER
+  jne .end
+
+  mov rcx, A2  
+  mov rbx, rax
+  DATA rbx
+  mov rax, A0
+  mov rax, [rax]
+  VECTOR_ELEMENTS rax
+  mov [rax + 8 * rbx], rcx
+
+.end:
+  lea rax, [SobVoid]
+  leave
+  ret
+
+prim_make_vector:
+  push rbp
+  mov rbp, rsp
+
+  cmp arg_count, 3
+  jge .error
+  cmp arg_count, 1
+  jl .error
+  mov rax, A0
+  mov rax, [rax]
+  mov rbx, rax
+  TYPE rbx
+  cmp rbx, T_INTEGER
+  jne .error
+
+  mov rbx, A0
+  mov rbx, [rbx]
+  DATA rbx
+  push rbx
+  MALLOC rbx
+  mov rbx, rax
+  pop rcx
+
+  mov rax, rcx
+  shl rax, ((WORD_SIZE - TYPE_BITS) >> 1)
+
+  mov rdx, rbx
+  sub rdx, start_of_data
+  or rax, rdx
+  shl rax, TYPE_BITS
+  or rax, T_VECTOR
+
+  cmp rcx, 0
+  je .loop_end
+  lea rdx, [SobZero]
+  cmp arg_count, 2
+  jl .loop
+  mov rdx, A1
+
+.loop:
+  mov [rbx + 8 * (rcx - 1)], rdx
+  loop .loop
+.loop_end:
+  MAKE_POINTER rax
+  jmp .end
+
+.error:
+  lea rax, [SobVoid]
+.end:
+  leave
+  ret
 
 prim_apply:
-	push rbp
-	mov rbp, rsp
+  push rbp
+  mov rbp, rsp
 
-	cmp arg_count, 2
+  cmp arg_count, 2
   jne .error
   mov rax, A0
+  mov rax, [rax]
   TYPE rax
   cmp rax, T_CLOSURE
   jne .error
   mov rax, A1
+  mov rax, [rax]
   TYPE rax
   cmp rax, T_PAIR
+  je .cont
+  cmp rax, T_NIL
   jne .error
 
+.cont:
   mov rsi, A0
   mov rdi, A1
 
-  PAIR_LENGTH A1
-  sal rax, 3
+  PAIR_LENGTH rdi
+  shl rax, 3
   sub rsp, rax
   add rsp, 8 * 3
 
-  PAIR_LENGTH A1
+  PAIR_LENGTH rdi
   mov rcx, rax
   mov rax, ret_addr
-  mov rbx, env
+  mov rbx, [rsi]
+  CLOSURE_ENV rbx
   mov rbp, old_rbp
   mov [rsp], rax
   mov [rsp + 8 * 1], rbx
@@ -1176,8 +1538,9 @@ prim_apply:
 
   xor rcx, rcx
 .loop:
-  cmp rdi, SOB_NIL
+  cmp rdi, qword SobNil
   je .end
+  mov rdi, [rdi]
   mov rax, rdi
   CAR rax
   mov [rsp + 8 * (3 + rcx)], rax
@@ -1185,512 +1548,504 @@ prim_apply:
   CDR rdi
   jmp .loop
 .end:
+  mov rsi, [rsi]
   CLOSURE_CODE rsi
   jmp rsi
 .error:
-  mov rax, SOB_NIL
-	leave
-	ret
+  lea rax, [SobVoid]
+  leave
+  ret
 
 prim_symbol_to_string:
-	push rbp
-	mov rbp, rsp
+  push rbp
+  mov rbp, rsp
 
   cmp arg_count, 1
   jne .error
   mov rax, A0
+  mov rax, [rax]
   mov rbx, rax
   TYPE rbx
   cmp rbx, T_SYMBOL
   jne .error
 
-	DATA rax
-  add rax, start_of_data
-  mov rax, [rax]
+  xor rax, T_STRING ^ T_SYMBOL
+  MAKE_POINTER rax
   jmp .end
 
 .error:
-  mov rax, .error_sob_str
+  lea rax, [SobVoid]
 .end:
-	leave
-	ret
-
-section .data
-.error_sob_str:
-  MAKE_LITERAL_STRING ""
+  leave
+  ret
 
 prim_string_to_symbol:
-	push rbp
-	mov rbp, rsp
+  push rbp
+  mov rbp, rsp
 
   cmp arg_count, 1
   jne .error
   mov rax, A0
+  mov rax, [rax]
   mov rbx, rax
   TYPE rbx
   cmp rbx, T_STRING
   jne .error
 
-  MALLOC 1
-  mov rbx, rax
-	mov rax, A0
-  mov [rbx], rax
-  MAKE_LITERAL_SYMBOL_2 rbx
+  xor rax, T_SYMBOL ^ T_STRING
+  MAKE_POINTER rax
   jmp .end
 
 .error:
-  mov rax, MAKE_LITERAL_SYMBOL(start_of_data)
+  lea rax, [SobVoid]
 .end:
-	leave
-	ret
+  leave
+  ret
 
 write_sob_undefined:
-	push rbp
-	mov rbp, rsp
+  push rbp
+  mov rbp, rsp
 
-	mov rax, 0
-	mov rdi, .undefined
-	call printf
+  mov rax, 0
+  mov rdi, .undefined
+  call printf
 
-	leave
-	ret
+  leave
+  ret
 
 section .data
 .undefined:
-	db "#<undefined>", 0
+  db "#<undefined>", 0
 
 write_sob_integer:
-	push rbp
-	mov rbp, rsp
+  push rbp
+  mov rbp, rsp
 
-	mov rsi, qword [rbp + 8 + 1*8]
-	sar rsi, TYPE_BITS
-	mov rdi, .int_format_string
-	mov rax, 0
-	call printf
+  mov rsi, qword [rbp + 8 + 1*8]
+  sar rsi, TYPE_BITS
+  mov rdi, .int_format_string
+  mov rax, 0
+  call printf
 
-	leave
-	ret
+  leave
+  ret
 
 section .data
 .int_format_string:
-	db "%ld", 0
+  db "%ld", 0
 
 write_sob_char:
-	push rbp
-	mov rbp, rsp
+  push rbp
+  mov rbp, rsp
 
-	mov rsi, qword [rbp + 8 + 1*8]
-	DATA rsi
+  mov rsi, qword [rbp + 8 + 1*8]
+  DATA rsi
 
-	cmp rsi, CHAR_NUL
-	je .Lnul
+  cmp rsi, CHAR_NUL
+  je .Lnul
 
-	cmp rsi, CHAR_TAB
-	je .Ltab
+  cmp rsi, CHAR_TAB
+  je .Ltab
 
-	cmp rsi, CHAR_NEWLINE
-	je .Lnewline
+  cmp rsi, CHAR_NEWLINE
+  je .Lnewline
 
-	cmp rsi, CHAR_PAGE
-	je .Lpage
+  cmp rsi, CHAR_PAGE
+  je .Lpage
 
-	cmp rsi, CHAR_RETURN
-	je .Lreturn
+  cmp rsi, CHAR_RETURN
+  je .Lreturn
 
-	cmp rsi, CHAR_SPACE
-	je .Lspace
-	jg .Lregular
+  cmp rsi, CHAR_SPACE
+  je .Lspace
+  jg .Lregular
 
-	mov rdi, .special
-	jmp .done	
+  mov rdi, .special
+  jmp .done  
 
 .Lnul:
-	mov rdi, .nul
-	jmp .done
+  mov rdi, .nul
+  jmp .done
 
 .Ltab:
-	mov rdi, .tab
-	jmp .done
+  mov rdi, .tab
+  jmp .done
 
 .Lnewline:
-	mov rdi, .newline
-	jmp .done
+  mov rdi, .newline
+  jmp .done
 
 .Lpage:
-	mov rdi, .page
-	jmp .done
+  mov rdi, .page
+  jmp .done
 
 .Lreturn:
-	mov rdi, .return
-	jmp .done
+  mov rdi, .return
+  jmp .done
 
 .Lspace:
-	mov rdi, .space
-	jmp .done
+  mov rdi, .space
+  jmp .done
 
 .Lregular:
-	mov rdi, .regular
-	jmp .done
+  mov rdi, .regular
+  jmp .done
 
 .done:
-	mov rax, 0
-	call printf
+  mov rax, 0
+  call printf
 
-	leave
-	ret
+  leave
+  ret
 
 section .data
 .space:
-	db "#\space", 0
+  db "#\space", 0
 .newline:
-	db "#\newline", 0
+  db "#\newline", 0
 .return:
-	db "#\return", 0
+  db "#\return", 0
 .tab:
-	db "#\tab", 0
+  db "#\tab", 0
 .page:
-	db "#\page", 0
+  db "#\page", 0
 .nul:
-	db "#\nul", 0
+  db "#\nul", 0
 .special:
-	db "#\x%02x", 0
+  db "#\x%01x", 0
 .regular:
-	db "#\\%c", 0
+  db "#\%c", 0
 
 write_sob_void:
-	push rbp
-	mov rbp, rsp
+  push rbp
+  mov rbp, rsp
 
-	mov rax, 0
-	mov rdi, .void
-	call printf
+  mov rax, 0
+  mov rdi, .void
+  call printf
 
-	leave
-	ret
+  leave
+  ret
 
 section .data
 .void:
-	db "#<void>", 0
-	
+  db "#<void>", 0
+  
 write_sob_bool:
-	push rbp
-	mov rbp, rsp
+  push rbp
+  mov rbp, rsp
 
-	mov rax, qword [rbp + 8 + 1*8]
-	cmp rax, SOB_FALSE
-	je .sobFalse
-	
-	mov rdi, .true
-	jmp .continue
+  mov rax, qword [rbp + 8 + 1*8]
+  cmp rax, SOB_FALSE
+  je .sobFalse
+  
+  mov rdi, .true
+  jmp .continue
 
 .sobFalse:
-	mov rdi, .false
+  mov rdi, .false
 
 .continue:
-	mov rax, 0
-	call printf	
+  mov rax, 0
+  call printf  
 
-	leave
-	ret
+  leave
+  ret
 
-section .data			
+section .data      
 .false:
-	db "#f", 0
+  db "#f", 0
 .true:
-	db "#t", 0
+  db "#t", 0
 
 write_sob_nil:
-	push rbp
-	mov rbp, rsp
+  push rbp
+  mov rbp, rsp
 
-	mov rax, 0
-	mov rdi, .nil
-	call printf
+  mov rax, 0
+  mov rdi, .nil
+  call printf
 
-	leave
-	ret
+  leave
+  ret
 
 section .data
 .nil:
-	db "()", 0
+  db "()", 0
 
 write_sob_string:
-	push rbp
-	mov rbp, rsp
+  push rbp
+  mov rbp, rsp
 
-	mov rax, 0
-	mov rdi, .double_quote
-	call printf
+  mov rax, 0
+  mov rdi, .double_quote
+  call printf
 
-	mov rax, qword [rbp + 8 + 1*8]
-	mov rcx, rax
-	STRING_LENGTH rcx
-	STRING_ELEMENTS rax
+  mov rax, qword [rbp + 8 + 1*8]
+  mov rcx, rax
+  STRING_LENGTH rcx
+  STRING_ELEMENTS rax
 
 .loop:
-	cmp rcx, 0
-	je .done
-	mov bl, byte [rax]
-	and rbx, 0xff
+  cmp rcx, 0
+  je .done
+  mov bl, byte [rax]
+  and rbx, 0xff
 
-	cmp rbx, CHAR_TAB
-	je .ch_tab
-	cmp rbx, CHAR_NEWLINE
-	je .ch_newline
-	cmp rbx, CHAR_PAGE
-	je .ch_page
-	cmp rbx, CHAR_RETURN
-	je .ch_return
-	cmp rbx, CHAR_SPACE
-	jl .ch_hex
-	
-	mov rdi, .fs_simple_char
-	mov rsi, rbx
-	jmp .printf
-	
+  cmp rbx, CHAR_TAB
+  je .ch_tab
+  cmp rbx, CHAR_NEWLINE
+  je .ch_newline
+  cmp rbx, CHAR_PAGE
+  je .ch_page
+  cmp rbx, CHAR_RETURN
+  je .ch_return
+  cmp rbx, CHAR_SPACE
+  jl .ch_hex
+  
+  mov rdi, .fs_simple_char
+  mov rsi, rbx
+  jmp .printf
+  
 .ch_hex:
-	mov rdi, .fs_hex_char
-	mov rsi, rbx
-	jmp .printf
-	
+  mov rdi, .fs_hex_char
+  mov rsi, rbx
+  jmp .printf
+  
 .ch_tab:
-	mov rdi, .fs_tab
-	mov rsi, rbx
-	jmp .printf
-	
+  mov rdi, .fs_tab
+  mov rsi, rbx
+  jmp .printf
+  
 .ch_page:
-	mov rdi, .fs_page
-	mov rsi, rbx
-	jmp .printf
-	
+  mov rdi, .fs_page
+  mov rsi, rbx
+  jmp .printf
+  
 .ch_return:
-	mov rdi, .fs_return
-	mov rsi, rbx
-	jmp .printf
+  mov rdi, .fs_return
+  mov rsi, rbx
+  jmp .printf
 
 .ch_newline:
-	mov rdi, .fs_newline
-	mov rsi, rbx
+  mov rdi, .fs_newline
+  mov rsi, rbx
 
 .printf:
-	push rax
-	push rcx
-	mov rax, 0
-	call printf
-	pop rcx
-	pop rax
+  push rax
+  push rcx
+  mov rax, 0
+  call printf
+  pop rcx
+  pop rax
 
-	dec rcx
-	inc rax
-	jmp .loop
+  dec rcx
+  inc rax
+  jmp .loop
 
 .done:
-	mov rax, 0
-	mov rdi, .double_quote
-	call printf
+  mov rax, 0
+  mov rdi, .double_quote
+  call printf
 
-	leave
-	ret
+  leave
+  ret
 section .data
 .double_quote:
-	db '"', 0
+  db '"', 0
 .fs_simple_char:
-	db "%c", 0
+  db "%c", 0
 .fs_hex_char:
-	db "\x%02x;", 0	
+  db "\x%01x;", 0  
 .fs_tab:
-	db "\t", 0
+  db "\t", 0
 .fs_page:
-	db "\f", 0
+  db "\f", 0
 .fs_return:
-	db "\r", 0
+  db "\r", 0
 .fs_newline:
-	db "\n", 0
+  db "\n", 0
 
 write_sob_pair:
-	push rbp
-	mov rbp, rsp
+  push rbp
+  mov rbp, rsp
 
-	mov rax, 0
-	mov rdi, .open_paren
-	call printf
-	mov rax, qword [rbp + 8 + 1*8]
-	CAR rax
-	push rax
-	call write_sob
-	add rsp, 1*8
-	mov rax, qword [rbp + 8 + 1*8]
-	CDR rax
-	push rax
-	call write_sob_pair_on_cdr
-	add rsp, 1*8
-	mov rdi, .close_paren
-	mov rax, 0
-	call printf
+  mov rax, 0
+  mov rdi, .open_paren
+  call printf
+  mov rax, qword [rbp + 8 + 1*8]
+  CAR rax
+  push qword [rax]
+  call write_sob
+  add rsp, 1*8
+  mov rax, qword [rbp + 8 + 1*8]
+  CDR rax
+  push qword [rax]
+  call write_sob_pair_on_cdr
+  add rsp, 1*8
+  mov rdi, .close_paren
+  mov rax, 0
+  call printf
 
-	leave
-	ret
+  leave
+  ret
 
 section .data
 .open_paren:
-	db "(", 0
+  db "(", 0
 .close_paren:
-	db ")", 0
+  db ")", 0
 
 write_sob_pair_on_cdr:
-	push rbp
-	mov rbp, rsp
+  push rbp
+  mov rbp, rsp
 
-	mov rbx, qword [rbp + 8 + 1*8]
-	mov rax, rbx
-	TYPE rbx
-	cmp rbx, T_NIL
-	je .done
-	cmp rbx, T_PAIR
-	je .cdrIsPair
-	push rax
-	mov rax, 0
-	mov rdi, .dot
-	call printf
-	call write_sob
-	add rsp, 1*8
-	jmp .done
+  mov rbx, qword [rbp + 8 + 1*8]
+  mov rax, rbx
+  TYPE rbx
+  cmp rbx, T_NIL
+  je .done
+  cmp rbx, T_PAIR
+  je .cdrIsPair
+  push rax
+  mov rax, 0
+  mov rdi, .dot
+  call printf
+  call write_sob
+  add rsp, 1*8
+  jmp .done
 
 .cdrIsPair:
-	mov rbx, rax
-	CDR rbx
-	push rbx
-	CAR rax
-	push rax
-	mov rax, 0
-	mov rdi, .space
-	call printf
-	call write_sob
-	add rsp, 1*8
-	call write_sob_pair_on_cdr
-	add rsp, 1*8
+  mov rbx, rax
+  CDR rbx
+  push qword [rbx]
+  CAR rax
+  push qword [rax]
+  mov rax, 0
+  mov rdi, .space
+  call printf
+  call write_sob
+  add rsp, 1*8
+  call write_sob_pair_on_cdr
+  add rsp, 1*8
 
 .done:
-	leave
-	ret
+  leave
+  ret
 
 section .data
 .space:
-	db " ", 0
+  db " ", 0
 .dot:
-	db " . ", 0
+  db " . ", 0
 
 write_sob_vector:
-	push rbp
-	mov rbp, rsp
+  push rbp
+  mov rbp, rsp
 
-	mov rax, 0
-	mov rdi, .fs_open_vector
-	call printf
-
-	mov rax, qword [rbp + 8 + 1*8]
-	mov rcx, rax
-	VECTOR_LENGTH rcx
-	cmp rcx, 0
-	je .done
-	VECTOR_ELEMENTS rax
-
-	push rcx
-	push rax
-	mov rax, qword [rax]
-	push qword [rax]
-	call write_sob
-	add rsp, 1*8
-	pop rax
-	pop rcx
-	dec rcx
-	add rax, 8
-
-.loop:
-	cmp rcx, 0
-	je .done
-
-	push rcx
-	push rax
-	mov rax, 0
-	mov rdi, .fs_space
-	call printf
-	
-	pop rax
-	push rax
-	mov rax, qword [rax]
-	push qword [rax]
-	call write_sob
-	add rsp, 1*8
-	pop rax
-	pop rcx
-	dec rcx
-	add rax, 8
-	jmp .loop
-
-.done:
-	mov rax, 0
-	mov rdi, .fs_close_vector
-	call printf
-
-	leave
-	ret
-
-section	.data
-.fs_open_vector:
-	db "#(", 0
-.fs_close_vector:
-	db ")", 0
-.fs_space:
-	db " ", 0
-
-write_sob_symbol:
-	push rbp
-	mov rbp, rsp
+  mov rax, 0
+  mov rdi, .fs_open_vector
+  call printf
 
   mov rax, qword [rbp + 8 + 1*8]
-  DATA rax
-  add rax, start_of_data
-  mov rax, [rax]
   mov rcx, rax
-	STRING_LENGTH rcx
-	STRING_ELEMENTS rax
+  VECTOR_LENGTH rcx
+  cmp rcx, 0
+  je .done
+  VECTOR_ELEMENTS rax
+
+  push rcx
+  push rax
+  mov rax, qword [rax]
+  push qword [rax]
+  call write_sob
+  add rsp, 1*8
+  pop rax
+  pop rcx
+  dec rcx
+  add rax, 8
 
 .loop:
-	cmp rcx, 0
-	je .done
-	mov bl, byte [rax]
-	and rbx, 0xfff
-  mov rdi, .fs_simple_char
-	mov rsi, rbx
-	push rax
-	push rcx
-	mov rax, 0
-	call printf
-	pop rcx
-	pop rax
+  cmp rcx, 0
+  je .done
 
-	dec rcx
-	inc rax
-	jmp .loop
+  push rcx
+  push rax
+  mov rax, 0
+  mov rdi, .fs_space
+  call printf
+  
+  pop rax
+  push rax
+  mov rax, qword [rax]
+  push qword [rax]
+  call write_sob
+  add rsp, 1*8
+  pop rax
+  pop rcx
+  dec rcx
+  add rax, 8
+  jmp .loop
 
 .done:
-	leave
-	ret
+  mov rax, 0
+  mov rdi, .fs_close_vector
+  call printf
+
+  leave
+  ret
+
+section  .data
+.fs_open_vector:
+  db "#(", 0
+.fs_close_vector:
+  db ")", 0
+.fs_space:
+  db " ", 0
+
+write_sob_symbol:
+  push rbp
+  mov rbp, rsp
+
+  mov rax, qword [rbp + 8 + 1*8]
+  mov rcx, rax
+  STRING_LENGTH rcx
+  STRING_ELEMENTS rax
+
+.loop:
+  cmp rcx, 0
+  je .done
+  mov bl, byte [rax]
+  and rbx, 0xfff
+  mov rdi, .fs_simple_char
+  mov rsi, rbx
+  push rax
+  push rcx
+  mov rax, 0
+  call printf
+  pop rcx
+  pop rax
+
+  dec rcx
+  inc rax
+  jmp .loop
+
+.done:
+  leave
+  ret
 
 section .data
 .fs_simple_char:
   db "%c", 0
 
 write_sob_fraction:
-	push rbp
-	mov rbp, rsp
+  push rbp
+  mov rbp, rsp
 
   mov rax, qword [rbp + 8 + 1*8]
   mov rbx, rax
-  DATA_UPPER rax
-  DATA_LOWER rbx
+  DATA_UPPER_FRACTION rax
+  DATA_LOWER_FRACTION rbx
 
   mov rdx, rbx
   mov rsi, rax
@@ -1698,61 +2053,62 @@ write_sob_fraction:
   xor rax, rax
   call printf
 
-	leave
-	ret
+  leave
+  ret
 
 section .data
 .frac_format_string:
-	db "%ld/%ld", 0
+  db "%ld/%ld", 0
 
 write_sob_closure:
-	push rbp
-	mov rbp, rsp
+  push rbp
+  mov rbp, rsp
 
-	mov rsi, qword [rbp + 8 + 1*8]
-	mov rdx, rsi
-	CLOSURE_ENV rsi
-	CLOSURE_CODE rdx
-	mov rdi, .closure
-	mov rax, 0
-	call printf
+  mov rsi, qword [rbp + 8 + 1*8]
+  mov rdx, rsi
+  CLOSURE_ENV rsi
+  CLOSURE_CODE rdx
+  mov rdi, .closure
+  mov rax, 0
+  call printf
 
-	leave
-	ret
+  leave
+  ret
 section .data
 .closure:
-	db "#<closure [env:%p, code:%p]>", 0
+  db "#<closure [env:%p, code:%p]>", 0
 
 write_sob:
-	mov rax, qword [rsp + 1*8]
-	TYPE rax
-	jmp qword [.jmp_table + rax * 8]
+  mov rax, qword [rsp + 1*8]
+  TYPE rax
+  jmp qword [.jmp_table + rax * 8]
 
 section .data
 .jmp_table:
-	dq write_sob_undefined, write_sob_void, write_sob_nil
-	dq write_sob_integer, write_sob_fraction, write_sob_bool
-	dq write_sob_char, write_sob_string, write_sob_symbol
-	dq write_sob_closure, write_sob_pair, write_sob_vector
+  dq write_sob_undefined, write_sob_void, write_sob_nil
+  dq write_sob_integer, write_sob_fraction, write_sob_bool
+  dq write_sob_char, write_sob_string, write_sob_symbol
+  dq write_sob_closure, write_sob_pair, write_sob_vector
 
 section .text
 write_sob_if_not_void:
-	mov rax, qword [rsp + 1*8]
-	cmp rax, SOB_VOID
-	je .continue
+  mov rax, qword [rsp + 1*8]
+  mov rax, [rax]
+  cmp rax, SOB_VOID
+  je .continue
 
-	push rax
-	call write_sob
-	add rsp, 1*8
-	mov rax, 0
-	mov rdi, .newline
-	call printf
-	
+  push rax
+  call write_sob
+  add rsp, 1*8
+  mov rax, 0
+  mov rdi, .newline
+  call printf
+  
 .continue:
-	ret
+  ret
 section .data
 .newline:
-	db CHAR_NEWLINE, 0
-	
-	
-	
+  db CHAR_NEWLINE, 0
+  
+  
+  

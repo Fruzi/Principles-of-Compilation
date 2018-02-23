@@ -137,25 +137,27 @@
             ((rational? value)
              (format "~a:\n\tdq MAKE_LITERAL_FRACTION(~a, ~a)\t; ~s\n" label (numerator value) (denominator value) value))
             ((char? value)
-             (format "~a:\n\tdq MAKE_LITERAL(T_CHAR, ~a)\t; ~s\n" label (char->integer value) value))
+             (format "~a:\n\tdq MAKE_LITERAL(T_CHAR, ~a)\t\n" label (char->integer value)))
             ((string? value)
-             (format "~a:\n\tMAKE_LITERAL_STRING ~s\t; ~s\n" label value value))
+             (if (zero? (string-length value))
+                 (format "~a:\n\tMAKE_EMPTY_STRING\t; ~s\n" label value)
+                 (format "~a:\n\tMAKE_LITERAL_STRING ~s\t; ~s\n" label value value)))
             ((symbol? value)
-             (string-append
-               (format "~a_str:\n\tMAKE_LITERAL_STRING \"~s\"\t; \"~s\"\n" label value value)
-               (format "~a:\n\tdq MAKE_LITERAL_SYMBOL(~a_str)\t; ~s\n" label label value)))
+             (format "~a:\n\tMAKE_LITERAL_SYMBOL ~s\t; ~s\n" label (symbol->string value) value))
             ((pair? value)
              (let ((car-label (table-find-label consts-table (car value)))
                    (cdr-label (table-find-label consts-table (cdr value))))
                (format "~a:\n\tdq MAKE_LITERAL_PAIR(~a, ~a)\t; ~s\n" label car-label cdr-label value)))
             ((vector? value)
-             (string-append
-               (format "~a:\n\tMAKE_LITERAL_VECTOR " label)
-               (fold-left (lambda (acc curr) 
-                            (format "~a, ~a" acc (table-find-label consts-table curr)))
-                          (table-find-label consts-table (vector-ref value 0))
-                          (cdr (vector->list value)))
-               (format "\t; ~s\n" value)))
+             (if (zero? (vector-length value))
+                 (format "~a:\n\tMAKE_EMPTY_VECTOR\n" label)
+                 (string-append
+                  (format "~a:\n\tMAKE_LITERAL_VECTOR " label)
+                  (fold-left (lambda (acc curr) 
+                               (format "~a, ~a" acc (table-find-label consts-table curr)))
+                             (table-find-label consts-table (vector-ref value 0))
+                             (cdr (vector->list value)))
+                  (format "\t; ~s\n" value))))
             (else (format "Data-gen unsopported for ~a" value))))))
 
 (define data-gen-global
@@ -198,7 +200,8 @@
    (make-table-entry '() "SobNil")
    (make-table-entry (void) "SobVoid")
    (make-table-entry #t "SobTrue")
-   (make-table-entry #f "SobFalse")))
+   (make-table-entry #f "SobFalse")
+   (make-table-entry 0 "SobZero")))
 
 (define const-label-num 0)
 
@@ -227,7 +230,7 @@
    (make-table-entry 'pair? "ProcPair")
    (make-table-entry 'string? "ProcString")
    (make-table-entry 'symbol? "ProcSymbol")
-   (make-table-entry 'vector? "ProcVector")
+   (make-table-entry 'vector? "ProcVectorQ")
    (make-table-entry 'integer->char "ProcIntegerToChar")
    (make-table-entry 'char->integer "ProcCharToInteger")
    (make-table-entry 'remainder "ProcRemainder")
@@ -236,8 +239,13 @@
    (make-table-entry 'not "ProcNot")
    (make-table-entry 'string-length "ProcStringLength")
    (make-table-entry 'string-ref "ProcStringRef")
+   (make-table-entry 'string-set! "ProcStringSet")
+   (make-table-entry 'make-string "ProcMakeString")
+   (make-table-entry 'vector "ProcVector")
    (make-table-entry 'vector-length "ProcVectorLength")
    (make-table-entry 'vector-ref "ProcVectorRef")
+   (make-table-entry 'vector-set! "ProcVectorSet")
+   (make-table-entry 'make-vector "ProcMakeVector")
    (make-table-entry 'apply "ProcApply")
    (make-table-entry 'symbol->string "ProcSymbolToString")
    (make-table-entry 'string->symbol "ProcStringToSymbol")))
@@ -276,11 +284,11 @@
 
 (define code-gen-const
   (lambda (pe)
-    (format "mov rax, [~a]\n" (table-find-label consts-table (cadr pe)))))
+    (format "mov rax, qword ~a\n" (table-find-label consts-table (cadr pe)))))
 
 (define code-gen-fvar
   (lambda (pe)
-    (format "mov rax, [~a]\n" (table-find-label globals-table (cadr pe)))))
+    (format "mov rax, qword ~a\n" (table-find-label globals-table (cadr pe)))))
 
 (define code-gen-pvar
   (lambda (pe)
@@ -305,7 +313,7 @@
           (if3-label-index if3-label-index))
       (string-append
        (code-gen test)
-       "cmp rax, SOB_FALSE\n"
+       "cmp rax, qword SobFalse\n"
        (format "je if3_false_~a\n" if3-label-index)
        (code-gen dit)
        (format "jmp if3_end_~a\n" if3-label-index)
@@ -322,7 +330,7 @@
        (fold-left (lambda (acc curr)
                     (string-append
                      acc
-                     "cmp rax, SOB_FALSE\n"
+                     "cmp rax, qword SobFalse\n"
                      (format "jne or_end_~a\n" or-label-index)
                      (code-gen curr)))
                   (code-gen (car or-pes))
@@ -335,8 +343,9 @@
           (val (caddr pe)))
       (string-append
        (code-gen val)
+       "mov rax, [rax]\n"
        (format "mov [~a], rax\n" (table-find-label globals-table var))
-       "mov rax, SOB_VOID\n"))))
+       "mov rax, qword SobVoid\n"))))
 
 (define code-gen-set
   (lambda (pe)
@@ -347,7 +356,9 @@
       (string-append
        (code-gen val)
        (cond ((eq? var-tag 'fvar)
-              (format "mov [~a], rax\n" (table-find-label globals-table var-sym)))
+              (string-append
+               "mov rax, [rax]\n"
+               (format "mov [~a], rax\n" (table-find-label globals-table var-sym))))
              ((eq? var-tag 'pvar)
               (let ((minor (caddr var)))
                 (format "mov An(~a), rax\n" minor)))
@@ -358,11 +369,13 @@
                  "mov rbx, env\n"
                  (format "mov rbx, [rbx + 8 * ~a]\n" major)
                  (format "mov [rbx + 8 * ~a], rax\n" minor)))))
-       "mov rax, SOB_VOID\n"))))
+       "mov rax, qword SobVoid\n"))))
 
 (define code-gen-seq
   (lambda (pe)
-    (apply string-append (map code-gen (cadr pe)))))
+    (if (null? (cadr pe))
+        "lea rax, [SobVoid]\n"
+        (apply string-append (map code-gen (cadr pe))))))
 
 (define lambda-depth 0)
 
@@ -371,15 +384,15 @@
     (string-append
      "MALLOC 2\n"
      "push rax\n"
-     (format "MALLOC (~a + 1)\n" lambda-depth)
+     (format "MALLOC ~a\n" lambda-depth)
      "push rax\n"
      "MALLOC arg_count\n"
      "mov rdx, rax\n"
      "pop rbx\n"
      "pop rax\n"
-     "cmp arg_count, 0\n"
-     (format "je empty_env_~a\n" lambda-label-index)
      "mov rcx, arg_count\n"
+     "cmp rcx, 0\n"
+     (format "je empty_env_~a\n" lambda-label-index)
      (format "new_env_loop_~a:\n" lambda-label-index)
      "mov rdi, An(rcx - 1)\n"
      "mov [rdx + 8 * (rcx - 1)], rdi\n"
@@ -389,10 +402,10 @@
      "xor rdx, rdx\n"
      (format "new_env_loop_end_~a:\n" lambda-label-index)
      "mov [rbx], rdx\n"
-     "mov rdx, env\n"
-     "cmp rdx, 0\n"
+     (format "mov rcx, (~a - 1)\n" lambda-depth)
+     "cmp rcx, 0\n"
      (format "je extend_env_loop_end_~a\n" lambda-label-index)
-     (format "mov rcx, ~a\n" lambda-depth)
+     "mov rdx, env\n"
      (format "extend_env_loop_~a:\n" lambda-label-index)
      "mov rdi, [rdx + 8 * (rcx - 1)]\n"
      "mov [rbx + 8 * rcx], rdi\n"
@@ -409,8 +422,7 @@
     (string-append
      "leave\n"
      "ret\n"
-     (format "lambda_end_~a:\n" lambda-label-index)
-     "mov rax, [rax]\n")))
+     (format "lambda_end_~a:\n" lambda-label-index))))
 
 (define code-gen-lambda-simple
   (lambda (pe)
@@ -440,32 +452,61 @@
                   (code-gen-lambda-prologue lambda-label-index lambda-depth)
                   (format "cmp arg_count, ~a\n" (length params))
                   (format "jl lambda_end_~a\n" lambda-label-index)
-                  "MALLOC 1\n"
-                  "mov qword [rax], SOB_NIL\n"
-                  "push rax\n"
+                  (format "cmp arg_count, ~a\n" (length params))
+                  (format "jne has_opt_~a\n" lambda-label-index)
+                  "sub rbp, 8\n"
+                  "mov rdx, rbp\n"
+                  (format "mov rcx, (~a + 4)\n" (length params))
+                  (format "shift_up_loop_~a:\n" lambda-label-index)
+                  "mov rax, [rdx + 8]\n"
+                  "mov [rdx], rax\n"
+                  "add rdx, 8\n"
+                  (format "loop shift_up_loop_~a\n" lambda-label-index)
+                  "mov qword [rdx], SobNil\n"
+                  (format "jmp opt_end_~a\n" lambda-label-index)
+                  (format "has_opt_~a:\n" lambda-label-index)
                   "mov rcx, arg_count\n"
                   (format "sub rcx, ~a\n" (length params))
-                  "cmp rcx, 0\n"
-                  (format "je opt_list_loop_end_~a\n" lambda-label-index)
+                  "mov rsi, arg_count\n"
+                  "add rsi, 3\n"
+                  "shl rsi, 3\n"
+                  "push qword SobNil\n"
                   (format "opt_list_loop_~a:\n" lambda-label-index)
                   "push rcx\n"
+                  "push rsi\n"
                   "MALLOC 1\n"
-                  "push rax\n"
-                  "MALLOC 1\n"
-                  "mov rbx, rax\n"
-                  "pop rax\n"
+                  "pop rsi\n"
                   "pop rcx\n"
-                  (format "mov rdx, An(rcx + ~a - 1)\n" (length params))
-                  "mov [rbx], rdx\n"
                   "pop rdx\n"
-                  "MAKE_DYNAMIC_PAIR rax, rbx, rdx\n"
+                  "push rsi\n"
+                  "mov rsi, [rbp + rsi]\n"
+                  "MAKE_DYNAMIC_PAIR rax, rsi, rdx\n"
+                  "pop rsi\n"
+                  "sub rsi, 8\n"
                   "push rax\n"
                   (format "loop opt_list_loop_~a\n" lambda-label-index)
-                  (format "opt_list_loop_end_~a:\n" lambda-label-index)
-                  (format "mov rcx, ~a\n" (length params))
-                  "pop rbx\n"
-                  "mov rbx, [rbx]\n"
-                  "mov [rbp + 8 * (rcx + 4)], rbx\n"
+                  "pop rax\n"
+                  "mov rcx, arg_count\n"
+                  "mov An(rcx - 1), rax\n"
+                  "mov rdi, rcx\n"
+                  "add rdi, 2\n"
+                  "shl rdi, 3\n"
+                  (format "mov rsi, (~a + 3)\n" (length params))
+                  "shl rsi, 3\n"
+                  (format "mov rcx, (~a + 4)\n" (length params))
+                  "mov rbx, arg_count\n"
+                  (format "shift_down_loop_~a:\n" lambda-label-index)
+                  "mov rax, [rbp + rsi]\n"
+                  "mov [rbp + rdi], rax\n"
+                  "sub rsi, 8\n"
+                  "sub rdi, 8\n"
+                  (format "loop shift_down_loop_~a\n" lambda-label-index)  
+                  (format "sub rbx, (~a + 1)\n" (length params))
+                  "shl rbx, 3\n"
+                  "add rbp, rbx\n"
+                  (format "opt_end_~a:\n" lambda-label-index)
+                  (format "mov arg_count, (~a + 1)\n" (length params))
+                  "mov rsp, rbp\n"
                   (code-gen body)
                   (code-gen-lambda-epilogue lambda-label-index lambda-depth))))
         (set! lambda-depth (- lambda-depth 1))
@@ -482,6 +523,7 @@
                  (reverse args)))
      (format "push ~a\n" (length args))
      (code-gen proc)
+     "mov rax, [rax]\n"
      "mov rbx, rax\n"
      "TYPE rbx\n"
      "cmp rbx, T_CLOSURE\n"
@@ -543,10 +585,7 @@
   (lambda (pe)
     (string-append
      (code-gen (cadr pe))
-     "push rax\n"
-     "MALLOC 1\n"
-     "pop rbx\n"
-     "mov [rax], rbx\n")))
+     "MAKE_POINTER rax\n")))
 
 (define code-gen-box-get
   (lambda (pe)
@@ -563,7 +602,7 @@
        "mov rbx, rax\n"
        (code-gen var)
        "mov [rax], rbx\n"
-       "mov rax, SOB_VOID\n"))))
+       "mov rax, qword SobVoid\n"))))
 
 (define code-gen
   (lambda (pe)
@@ -595,57 +634,59 @@
 (define asm-prologue
   (lambda (code)
     (append
-      (list
-        "%include 'scheme.s'"
-        ;"section .bss"
-        ;"malloc_pointer:  resq 1"
-        ;"start_of_memory:  resb 1 << 31"
-        "section .data"
-        "start_of_data:"
-        ""
-        (apply string-append (map data-gen-const consts-table))
-        (apply string-append (map data-gen-global globals-table))
-        "section .text"
-        "main:"
-        "push 0"
-        "push 0"
-        "push 0"
-        "push rbp"
-        "mov rbp, rsp"
-        ""
-        "MAKE_LITERAL_CLOSURE ProcCar, 0, prim_car"
-        "MAKE_LITERAL_CLOSURE ProcCdr, 0, prim_cdr"
-        "MAKE_LITERAL_CLOSURE ProcCons, 0, prim_cons"
-        "MAKE_LITERAL_CLOSURE ProcEq, 0, prim_eq"
-        "MAKE_LITERAL_CLOSURE ProcEquals, 0, prim_equals"
-        "MAKE_LITERAL_CLOSURE ProcAdd, 0, prim_add"
-        "MAKE_LITERAL_CLOSURE ProcMul, 0, prim_mul"
-        "MAKE_LITERAL_CLOSURE ProcDiv, 0, prim_div"
-        "MAKE_LITERAL_CLOSURE ProcBoolean, 0, prim_boolean"
-        "MAKE_LITERAL_CLOSURE ProcChar, 0, prim_char"
-        "MAKE_LITERAL_CLOSURE ProcProcedure, 0, prim_procedure"
-        "MAKE_LITERAL_CLOSURE ProcInteger, 0, prim_integer"
-        "MAKE_LITERAL_CLOSURE ProcRational, 0, prim_rational"
-        "MAKE_LITERAL_CLOSURE ProcPair, 0, prim_pair"
-        "MAKE_LITERAL_CLOSURE ProcString, 0, prim_string"
-        "MAKE_LITERAL_CLOSURE ProcSymbol, 0, prim_symbol"
-        "MAKE_LITERAL_CLOSURE ProcVector, 0, prim_vector"
-        "MAKE_LITERAL_CLOSURE ProcIntegerToChar, 0, prim_integer_to_char"
-        "MAKE_LITERAL_CLOSURE ProcCharToInteger, 0, prim_char_to_integer"
-        "MAKE_LITERAL_CLOSURE ProcRemainder, 0, prim_remainder"
-        "MAKE_LITERAL_CLOSURE ProcNumerator, 0, prim_numerator"
-        "MAKE_LITERAL_CLOSURE ProcDenominator, 0, prim_denominator"
-        "MAKE_LITERAL_CLOSURE ProcNot, 0, prim_not"
-        "MAKE_LITERAL_CLOSURE ProcStringLength, 0, prim_string_length"
-        "MAKE_LITERAL_CLOSURE ProcStringRef, 0, prim_string_ref"
-        "MAKE_LITERAL_CLOSURE ProcVectorLength, 0, prim_vector_length"
-        "MAKE_LITERAL_CLOSURE ProcVectorRef, 0, prim_vector_ref"
-        "MAKE_LITERAL_CLOSURE ProcApply, 0, prim_apply"
-        "MAKE_LITERAL_CLOSURE ProcSymbolToString, 0, prim_symbol_to_string"
-        "MAKE_LITERAL_CLOSURE ProcStringToSymbol, 0, prim_string_to_symbol"
-        "MAKE_LITERAL_CLOSURE ProcLessThan, 0, prim_less_than"
-        "MAKE_LITERAL_CLOSURE ProcGreaterThan, 0, prim_greater_than"
-        "")
+     (list
+      "%include 'scheme.s'"
+      "section .data"
+      "start_of_data:"
+      ""
+      (apply string-append (map data-gen-const consts-table))
+      (apply string-append (map data-gen-global globals-table))
+      "section .text"
+      "main:"
+      "push 0"
+      "push 0"
+      "push 0"
+      "push rbp"
+      "mov rbp, rsp"
+      ""
+      "MAKE_INITIAL_CLOSURE ProcCar, prim_car"
+      "MAKE_INITIAL_CLOSURE ProcCdr, prim_cdr"
+      "MAKE_INITIAL_CLOSURE ProcCons, prim_cons"
+      "MAKE_INITIAL_CLOSURE ProcEq, prim_eq"
+      "MAKE_INITIAL_CLOSURE ProcEquals, prim_equals"
+      "MAKE_INITIAL_CLOSURE ProcAdd, prim_add"
+      "MAKE_INITIAL_CLOSURE ProcMul, prim_mul"
+      "MAKE_INITIAL_CLOSURE ProcDiv, prim_div"
+      "MAKE_INITIAL_CLOSURE ProcBoolean, prim_boolean"
+      "MAKE_INITIAL_CLOSURE ProcChar, prim_char"
+      "MAKE_INITIAL_CLOSURE ProcProcedure, prim_procedure"
+      "MAKE_INITIAL_CLOSURE ProcInteger, prim_integer"
+      "MAKE_INITIAL_CLOSURE ProcRational, prim_rational"
+      "MAKE_INITIAL_CLOSURE ProcPair, prim_pair"
+      "MAKE_INITIAL_CLOSURE ProcString, prim_string"
+      "MAKE_INITIAL_CLOSURE ProcSymbol, prim_symbol"
+      "MAKE_INITIAL_CLOSURE ProcVectorQ, prim_vector_q"
+      "MAKE_INITIAL_CLOSURE ProcIntegerToChar, prim_integer_to_char"
+      "MAKE_INITIAL_CLOSURE ProcCharToInteger, prim_char_to_integer"
+      "MAKE_INITIAL_CLOSURE ProcRemainder, prim_remainder"
+      "MAKE_INITIAL_CLOSURE ProcNumerator, prim_numerator"
+      "MAKE_INITIAL_CLOSURE ProcDenominator, prim_denominator"
+      "MAKE_INITIAL_CLOSURE ProcNot, prim_not"
+      "MAKE_INITIAL_CLOSURE ProcStringLength, prim_string_length"
+      "MAKE_INITIAL_CLOSURE ProcStringRef, prim_string_ref"
+      "MAKE_INITIAL_CLOSURE ProcStringSet, prim_string_set"
+      "MAKE_INITIAL_CLOSURE ProcMakeString, prim_make_string"
+      "MAKE_INITIAL_CLOSURE ProcVector, prim_vector"
+      "MAKE_INITIAL_CLOSURE ProcVectorLength, prim_vector_length"
+      "MAKE_INITIAL_CLOSURE ProcVectorRef, prim_vector_ref"
+      "MAKE_INITIAL_CLOSURE ProcVectorSet, prim_vector_set"
+      "MAKE_INITIAL_CLOSURE ProcMakeVector, prim_make_vector"
+      "MAKE_INITIAL_CLOSURE ProcApply, prim_apply"
+      "MAKE_INITIAL_CLOSURE ProcSymbolToString, prim_symbol_to_string"
+      "MAKE_INITIAL_CLOSURE ProcStringToSymbol, prim_string_to_symbol"
+      "MAKE_INITIAL_CLOSURE ProcLessThan, prim_less_than"
+      "MAKE_INITIAL_CLOSURE ProcGreaterThan, prim_greater_than"
+      "")
      code)))
 
 (define asm-epilogue
@@ -677,7 +718,7 @@
   (lambda (in-file out-file)
     (let* ((input (append (file->list "builtins.scm") (file->list in-file)))
            (code (compile (pipeline input)))
-           (out-port (open-output-file out-file)))
+           (out-port (open-output-file out-file 'replace)))
       (for-each (lambda (line) (fprintf out-port "~a\n" line))
                 code)
       (close-output-port out-port))))
