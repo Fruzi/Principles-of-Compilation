@@ -356,7 +356,7 @@
 (define <quoted>
   (new
    (*parser (char #\'))
-   (*delayed (lambda () <sexpr>))
+   (*delayed (lambda () <sexprnowhitespace>))
    (*caten 2)
    (*pack-with (lambda (q s) (list 'quote s)))
    done))
@@ -364,7 +364,7 @@
 (define <quasiquoted>
   (new
    (*parser (char #\`))
-   (*delayed (lambda () <sexpr>))
+   (*delayed (lambda () <sexprnowhitespace>))
    (*caten 2)
    (*pack-with (lambda (q s) (list 'quasiquote s)))
    done))
@@ -372,7 +372,7 @@
 (define <unquoted>
   (new
    (*parser (char #\,))
-   (*delayed (lambda () <sexpr>))
+   (*delayed (lambda () <sexprnowhitespace>))
    (*caten 2)
    (*pack-with (lambda (q s) (list 'unquote s)))
    done))
@@ -381,7 +381,7 @@
   (new
    (*parser (char #\,))
    (*parser (char #\@))
-   (*delayed (lambda () <sexpr>))
+   (*delayed (lambda () <sexprnowhitespace>))
    (*caten 3)
    (*pack-with (lambda (q at s) (list 'unquote-splicing s)))
    done))
