@@ -654,11 +654,19 @@
    (*pack cadr)
    done))
 
+(define <anythingexceptnewline>
+  (new
+   (*parser <any>)
+   (*parser (char #\newline))
+   
+   *diff
+   done))
+
 (define <linecomment>
   (new
    (*parser (char #\;))
 
-   (*delayed (lambda () <sexprwithwhitespacenonewline>))
+   (*delayed (lambda () <anythingexceptnewline>))
    *star
 
    (*parser (char #\newline))
@@ -796,25 +804,6 @@
    (*pack cadr)
    done))
 
-(define <sexprwithwhitespacenonewline>
-  (new
-   (*parser <whitespacenonewline>)
-   (*parser <sexprcomment>)
-   (*parser <linecomment>)
-   (*disj 3)
-   *star
-
-   (*parser <sexprcore>)
-
-   (*parser <whitespacenonewline>)
-   (*parser <sexprcomment>)
-   (*parser <linecomment>)
-   (*disj 3)
-   *star
-
-   (*caten 3)
-   (*pack cadr)
-   done))
 
 (define <sexprnowhitespace>
   (new
