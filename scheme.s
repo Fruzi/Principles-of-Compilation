@@ -26,11 +26,20 @@
 %define TYPE_BITS 4
 %define WORD_SIZE 64
 
+%define gigabyte(n) ((1 << 30) * n)
+
 %define MAKE_LITERAL(type, lit) ((lit << TYPE_BITS) | type)
+
+%macro MAKE_LITERAL_2 3
+  mov rax, %3
+  shl rax, TYPE_BITS
+  or rax, %2
+  mov qword [%1], rax
+%endmacro
 
 ;;; MAKE_LITERAL_FROM_REG type, [register]
 %macro MAKE_LITERAL_FROM_REG 2
-  sal %2, TYPE_BITS
+  shl %2, TYPE_BITS
   or %2, %1
 %endmacro
 
@@ -56,15 +65,30 @@
 %endmacro
 
 %macro DATA_LOWER_FRACTION 1
-  sal %1, ((WORD_SIZE - TYPE_BITS) >> 1)
-  DATA_UPPER %1
+  shl %1, ((WORD_SIZE - TYPE_BITS) >> 1)
+  DATA_UPPER_FRACTION %1
 %endmacro
 
-%define LITERAL_PAIR_BASE(car, cdr) (((car << ((WORD_SIZE - TYPE_BITS) >> 1)) | cdr) << TYPE_BITS)
+%macro MAKE_LITERAL_PAIR 3
+  mov rax, %2
+  sub rax, start_of_data
+  shl rax, ((WORD_SIZE - TYPE_BITS) >> 1)
+  mov rbx, %3
+  sub rbx, start_of_data
+  or rax, rbx
+  shl rax, TYPE_BITS
+  or rax, T_PAIR
+  mov qword [%1], rax
+%endmacro
 
-%define MAKE_LITERAL_PAIR(car, cdr) ((LITERAL_PAIR_BASE((car - start_of_data), (cdr - start_of_data))) | T_PAIR)
-
-%define MAKE_LITERAL_FRACTION(num, den) ((LITERAL_PAIR_BASE(num, den)) | T_FRACTION)
+%macro MAKE_LITERAL_FRACTION 3
+  mov rax, %2
+  shl rax, (WORD_SIZE - TYPE_BITS) >> 1
+  or rax, %3
+  shl rax, TYPE_BITS
+  or rax, T_FRACTION
+  mov qword [%1], rax
+%endmacro
 
 %macro MAKE_LITERAL_FRACTION_2 2
   mov rax, %1
@@ -72,12 +96,6 @@
   or rax, %2
   shl rax, TYPE_BITS
   or rax, T_FRACTION
-%endmacro
-  
-%macro MAKE_LITERAL_2 2
-  mov rax, %2
-  sal rax, TYPE_BITS
-  or rax, %1
 %endmacro
 
 %macro CAR 1
@@ -111,8 +129,7 @@
 
 ;;; MAKE_INITIAL_CLOSURE target, code
 %macro MAKE_INITIAL_CLOSURE 2
-  xor rax, rax
-  MAKE_LITERAL_CLOSURE %1, rax, %2
+  MAKE_LITERAL_CLOSURE %1, 0, %2
 %endmacro
 
 %macro CLOSURE_ENV 1
@@ -126,15 +143,19 @@
   mov %1, qword [%1]
 %endmacro
 
-%macro MAKE_LITERAL_STRING 1+
-  dq (((((%%LstrEnd - %%Lstr) << ((WORD_SIZE - TYPE_BITS) >> 1)) | (%%Lstr - start_of_data)) << TYPE_BITS) | T_STRING)
-  %%Lstr:
-  db %1
-  %%LstrEnd:
+;;; MAKE_LITERAL_STRING target, string_ptr, string_length
+%macro MAKE_LITERAL_STRING 3
+  mov rbx, rax
+  sub rbx, start_of_data
+  mov rax, (%3 << ((WORD_SIZE - TYPE_BITS) >> 1))
+  or rax, rbx
+  shl rax, TYPE_BITS
+  or rax, T_STRING
+  mov qword [%1], rax
 %endmacro
 
-%macro MAKE_EMPTY_STRING 0
-  dq ((((%%Lstr - start_of_data)) << TYPE_BITS) | T_STRING)
+%macro MAKE_EMPTY_STRING 1
+  mov qword [%1], ((((%%Lstr - start_of_data)) << TYPE_BITS) | T_STRING)
   %%Lstr:
   db 0
   %%LstrEnd:
@@ -149,29 +170,15 @@
   add %1, start_of_data
 %endmacro
 
-;;; STRING_REF dest, src, index
-;;; dest cannot be RAX! (fix this!)
-%macro STRING_REF 3
-  push rax
-  mov rax, %2
-  STRING_ELEMENTS rax
-  add rax, %3
-  mov %1, byte [rax]
-  pop rax
-%endmacro
-
-%macro MAKE_LITERAL_VECTOR 1+
-  dq ((((((%%VecEnd - %%Vec) >> 3) << ((WORD_SIZE - TYPE_BITS) >> 1)) | (%%Vec - start_of_data)) << TYPE_BITS) | T_VECTOR)
-  %%Vec:
-  dq %1
-  %%VecEnd:
-%endmacro
-
-%macro MAKE_EMPTY_VECTOR 0
-  dq ((((%%Vec - start_of_data)) << TYPE_BITS) | T_VECTOR)
-  %%Vec:
-  dq 0
-  %%VecEnd:
+;;; MAKE_LITERAL_VECTOR target, vector_ptr, vector_length
+%macro MAKE_LITERAL_VECTOR 3
+  mov rbx, rax
+  sub rbx, start_of_data
+  mov rax, (%3 << ((WORD_SIZE - TYPE_BITS) >> 1))
+  or rax, rbx
+  shl rax, TYPE_BITS
+  or rax, T_VECTOR
+  mov qword [%1], rax
 %endmacro
 
 %macro VECTOR_LENGTH 1
@@ -181,23 +188,6 @@
 %macro VECTOR_ELEMENTS 1
   DATA_LOWER %1
   add %1, start_of_data
-%endmacro
-
-;;; VECTOR_REF dest, src, index
-;;; dest cannot be RAX! (fix this!)
-%macro VECTOR_REF 3
-  mov %1, %2
-  VECTOR_ELEMENTS %1
-  lea %1, [%1 + %3*8]
-  mov %1, qword [%1]
-  mov %1, qword [%1]
-%endmacro
-
-%macro MAKE_LITERAL_SYMBOL 1+
-  dq (((((%%LstrEnd - %%Lstr) << ((WORD_SIZE - TYPE_BITS) >> 1)) | (%%Lstr - start_of_data)) << TYPE_BITS) | T_SYMBOL)
-  %%Lstr:
-  db %1
-  %%LstrEnd:
 %endmacro
 
 %define SOB_UNDEFINED MAKE_LITERAL(T_UNDEFINED, 0)
@@ -255,23 +245,18 @@ endstruc
 ;; Right after an applic, the stack is: [ env | arg_count | arg0 | ... | argN | ... ]
 %define post_applic_arg_count qword [rsp + 8 * 1]
 
-;;; MALLOC n -> malloc(8 * n)
-%macro MALLOC 1
-  mov rdi, %1
-  sal rdi, 3
-  call malloc
-%endmacro
-
-;;; MALLOC_2 n -> malloc(n)
-%macro MALLOC_2 1
-  mov rdi, %1
-  call malloc
+%macro MY_MALLOC 1
+  push rbx
+  mov rbx, malloc_pointer
+  mov rax, qword [rbx]
+  add qword [rbx], %1
+  pop rbx
 %endmacro
 
 ;; Uses rax and rbx
 %macro MAKE_POINTER 1
   push %1
-  MALLOC 1
+  MY_MALLOC 1 * 8
   pop rbx
   mov [rax], rbx
 %endmacro
@@ -335,9 +320,10 @@ endstruc
   nop
 %endmacro
 
-extern exit, printf, scanf, malloc, c_gcd, c_divide, c_remainder, c_add_numerator, c_multiply
+extern exit, printf, scanf, c_gcd, c_divide, c_remainder, c_add_numerator, c_multiply
 global main, write_sob, write_sob_if_not_void
 
+section .text
 prim_car:
   push rbp
   mov rbp, rsp
@@ -389,7 +375,7 @@ prim_cons:
   cmp arg_count, 2
   jne .error
 
-  MALLOC 1
+  MY_MALLOC 1 * 8
   mov rbx, A0
   mov rcx, A1
   MAKE_DYNAMIC_PAIR rax, rbx, rcx
@@ -448,6 +434,9 @@ prim_equals:
   leave
   ret
 
+section .data
+.int_fmt: db "%ld", 10, 0
+  
 prim_less_than:
   push rbp
   mov rbp, rsp
@@ -1094,8 +1083,6 @@ prim_numerator:
   TYPE rbx
   cmp rbx, T_INTEGER
   jne .error
-  DATA rax
-  MAKE_LITERAL_FROM_REG T_INTEGER, rax
   MAKE_POINTER rax
   jmp .end
 
@@ -1284,7 +1271,7 @@ prim_make_string:
   mov rbx, [rbx]
   DATA rbx
   push rbx
-  MALLOC_2 rbx
+  MY_MALLOC rbx
   mov rbx, rax
   pop rcx
 
@@ -1323,10 +1310,13 @@ prim_vector:
   push rbp
   mov rbp, rsp
 
-  MALLOC arg_count
-  mov rbx, rax
-
   mov rcx, arg_count
+  push rcx
+  shl rcx, 3
+  MY_MALLOC rcx
+  mov rbx, rax
+  pop rcx
+  
   mov rax, rcx
   shl rax, ((WORD_SIZE - TYPE_BITS) >> 1)
 
@@ -1465,7 +1455,8 @@ prim_make_vector:
   mov rbx, [rbx]
   DATA rbx
   push rbx
-  MALLOC rbx
+  shl rbx, 3
+  MY_MALLOC rbx
   mov rbx, rax
   pop rcx
 

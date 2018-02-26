@@ -120,51 +120,73 @@
   (lambda (pes)
     (list->set (apply append (map (lambda (pe) (get-fvars '() pe)) pes)))))
 
-(define data-gen-const
+(define data-gen-const-1
+  (lambda (entry)
+    (let ((value (table-entry->value entry))
+          (label (table-entry->label entry)))
+      (format "~a: resq 1\n" label))))
+
+(define data-gen-const-2
   (lambda (entry)
     (let ((value (table-entry->value entry))
           (label (table-entry->label entry)))
       (cond ((null? value)
-             (format "~a:\n\tdq SOB_NIL\t; ~s\n" label value))
+             (format "mov qword [~a], SOB_NIL\n" label))
             ((eq? value (void))
-             (format "~a:\n\tdq SOB_VOID\t; ~s\n" label value))
+             (format "mov qword [~a], SOB_VOID\n" label))
             ((eq? value #t)
-             (format "~a:\n\tdq SOB_TRUE\t; ~s\n" label value))
+             (format "mov qword [~a], SOB_TRUE\n" label))
             ((eq? value #f)
-             (format "~a:\n\tdq SOB_FALSE\t; ~s\n" label value))
+             (format "mov qword [~a], SOB_FALSE\n" label))
             ((integer? value)
-             (format "~a:\n\tdq MAKE_LITERAL(T_INTEGER, ~a)\t; ~s\n" label value value))
+             (format "MAKE_LITERAL_2 ~a, T_INTEGER, ~a\n" label value))
             ((rational? value)
-             (format "~a:\n\tdq MAKE_LITERAL_FRACTION(~a, ~a)\t; ~s\n" label (numerator value) (denominator value) value))
+             (format "MAKE_LITERAL_FRACTION ~a, ~a, ~a\n" label (numerator value) (denominator value)))
             ((char? value)
-             (format "~a:\n\tdq MAKE_LITERAL(T_CHAR, ~a)\t\n" label (char->integer value)))
+             (format "MAKE_LITERAL_2 ~a, T_CHAR, ~a\n" label (char->integer value)))
             ((string? value)
-             (if (zero? (string-length value))
-                 (format "~a:\n\tMAKE_EMPTY_STRING\t; ~s\n" label value)
-                 (format "~a:\n\tMAKE_LITERAL_STRING ~s\t; ~s\n" label value value)))
+             (string-append
+              (format "MY_MALLOC ~a\n" (string-length value))
+              "xor rcx, rcx\n"
+              (apply string-append
+                     (map (lambda (ch)
+                            (string-append
+                             (format "mov byte [rax + rcx], ~a\n" (char->integer ch))
+                             "inc rcx\n"))
+                          (string->list value)))
+              (format "MAKE_LITERAL_STRING ~a, rax, ~a\n" label (string-length value))))
             ((symbol? value)
-             (format "~a:\n\tMAKE_LITERAL_SYMBOL ~s\t; ~s\n" label (symbol->string value) value))
+             (string-append
+              (data-gen-const-2 (make-table-entry (symbol->string value) label))
+              (format "xor qword [~a], T_SYMBOL ^ T_STRING\n" label)))
             ((pair? value)
              (let ((car-label (table-find-label consts-table (car value)))
                    (cdr-label (table-find-label consts-table (cdr value))))
-               (format "~a:\n\tdq MAKE_LITERAL_PAIR(~a, ~a)\t; ~s\n" label car-label cdr-label value)))
+               (format "MAKE_LITERAL_PAIR ~a, ~a, ~a\n" label car-label cdr-label)))
             ((vector? value)
-             (if (zero? (vector-length value))
-                 (format "~a:\n\tMAKE_EMPTY_VECTOR\n" label)
-                 (string-append
-                  (format "~a:\n\tMAKE_LITERAL_VECTOR " label)
-                  (fold-left (lambda (acc curr) 
-                               (format "~a, ~a" acc (table-find-label consts-table curr)))
-                             (table-find-label consts-table (vector-ref value 0))
-                             (cdr (vector->list value)))
-                  (format "\t; ~s\n" value))))
-            (else (format "Data-gen unsopported for ~a" value))))))
+             (string-append
+              (format "MY_MALLOC ~a * 8\n" (vector-length value))
+              "xor rcx, rcx\n"
+              (apply string-append
+                     (map (lambda (el)
+                            (string-append
+                             (format "mov qword [rax + 8 * rcx], ~a\n" (table-find-label consts-table el))
+                             "inc rcx\n"))
+                          (vector->list value)))
+              (format "MAKE_LITERAL_VECTOR ~a, rax, ~a\n" label (vector-length value))))
+            (else "")))))
 
-(define data-gen-global
+(define data-gen-global-1
   (lambda (entry)
     (let ((var (table-entry->value entry))
           (label (table-entry->label entry)))
-      (format "~a:\n\tdq SOB_UNDEFINED, 0\t; ~s\n" label var))))
+      (format "~a: resq 2\t; ~s\n" label var))))
+
+(define data-gen-global-2
+  (lambda (entry)
+    (let ((var (table-entry->value entry))
+          (label (table-entry->label entry)))
+      (format "mov qword [~a], SOB_UNDEFINED\n" label))))
 
 (define table-entry->value car)
 
@@ -284,11 +306,11 @@
 
 (define code-gen-const
   (lambda (pe)
-    (format "mov rax, qword ~a\n" (table-find-label consts-table (cadr pe)))))
+    (format "lea rax, [~a]\n" (table-find-label consts-table (cadr pe)))))
 
 (define code-gen-fvar
   (lambda (pe)
-    (format "mov rax, qword ~a\n" (table-find-label globals-table (cadr pe)))))
+    (format "lea rax, [~a]\n" (table-find-label globals-table (cadr pe)))))
 
 (define code-gen-pvar
   (lambda (pe)
@@ -345,7 +367,7 @@
        (code-gen val)
        "mov rax, [rax]\n"
        (format "mov [~a], rax\n" (table-find-label globals-table var))
-       "mov rax, qword SobVoid\n"))))
+       "lea rax, [SobVoid]\n"))))
 
 (define code-gen-set
   (lambda (pe)
@@ -369,7 +391,7 @@
                  "mov rbx, env\n"
                  (format "mov rbx, [rbx + 8 * ~a]\n" major)
                  (format "mov [rbx + 8 * ~a], rax\n" minor)))))
-       "mov rax, qword SobVoid\n"))))
+       "lea rax, [SobVoid]\n"))))
 
 (define code-gen-seq
   (lambda (pe)
@@ -382,11 +404,13 @@
 (define code-gen-lambda-prologue
   (lambda (lambda-label-index lambda-depth)
     (string-append
-     "MALLOC 2\n"
+     "MY_MALLOC 8 * 2\n"
      "push rax\n"
-     (format "MALLOC ~a\n" lambda-depth)
+     (format "MY_MALLOC 8 * ~a\n" lambda-depth)
      "push rax\n"
-     "MALLOC arg_count\n"
+     "mov rcx, arg_count\n"
+     "shl rcx, 3\n"
+     "MY_MALLOC rcx\n"
      "mov rdx, rax\n"
      "pop rbx\n"
      "pop rax\n"
@@ -474,7 +498,7 @@
                   (format "opt_list_loop_~a:\n" lambda-label-index)
                   "push rcx\n"
                   "push rsi\n"
-                  "MALLOC 1\n"
+                  "MY_MALLOC 8\n"
                   "pop rsi\n"
                   "pop rcx\n"
                   "pop rdx\n"
@@ -602,7 +626,7 @@
        "mov rbx, rax\n"
        (code-gen var)
        "mov [rax], rbx\n"
-       "mov rax, qword SobVoid\n"))))
+       "lea rax, [SobVoid]\n"))))
 
 (define code-gen
   (lambda (pe)
@@ -626,21 +650,23 @@
               ((eq? tag 'box-get) code-gen-box-get)
               ((eq? tag 'box-set) code-gen-box-set)
               (else (lambda (_) "")))))
-      (string-append
-       (format "\n; START ~s\n" pe)
-       (code-gen-fun pe)
-       (format "; END ~s\n\n" pe)))))
+      (code-gen-fun pe))))
 
 (define asm-prologue
   (lambda (code)
     (append
      (list
       "%include 'scheme.s'"
-      "section .data"
-      "start_of_data:"
       ""
-      (apply string-append (map data-gen-const consts-table))
-      (apply string-append (map data-gen-global globals-table))
+      "section .bss"
+      "malloc_pointer:"
+      "resq 1"
+      "start_of_data:"
+      (apply string-append (map data-gen-const-1 consts-table))
+      (apply string-append (map data-gen-global-1 globals-table))
+      "start_of_free_data:"
+      "resb gigabyte(1)"
+      ""
       "section .text"
       "main:"
       "push 0"
@@ -648,6 +674,12 @@
       "push 0"
       "push rbp"
       "mov rbp, rsp"
+      ""
+      "mov rax, malloc_pointer"
+      "mov qword [rax], start_of_free_data"
+      ""
+      (apply string-append (map data-gen-const-2 consts-table))
+      (apply string-append (map data-gen-global-2 globals-table))
       ""
       "MAKE_INITIAL_CLOSURE ProcCar, prim_car"
       "MAKE_INITIAL_CLOSURE ProcCdr, prim_cdr"
@@ -706,7 +738,6 @@
     (let ((code
            (map (lambda (pe)
                   (string-append
-                   (format "; ~s\n" pe)
                    (code-gen pe)
                    "push rax\n"
                    "call write_sob_if_not_void\n"
