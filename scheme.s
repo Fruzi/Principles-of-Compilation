@@ -1,8 +1,3 @@
-;;; scheme.s
-;;; Support for the Scheme compiler
-;;; 
-;;; Programmer: Mayer Goldberg, 2018
-
 %define T_UNDEFINED 0
 %define T_VOID 1
 %define T_NIL 2
@@ -26,9 +21,9 @@
 %define TYPE_BITS 4
 %define WORD_SIZE 64
 
-%define gigabyte(n) ((1 << 30) * n)
-
 %define MAKE_LITERAL(type, lit) ((lit << TYPE_BITS) | type)
+
+%define gigabyte(n) ((1 << 30) * n)
 
 %macro MAKE_LITERAL_2 3
   mov rax, %3

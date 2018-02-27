@@ -1,0 +1,5068 @@
+diff --git a/Makefile b/Makefile
+old mode 100644
+new mode 100755
+index e69de29..eefbe3d
+--- a/Makefile
++++ b/Makefile
+@@ -0,0 +1,19 @@
++CC		:=	gcc
++CC_FLAGS	:=	-m64 -g
++ASM		:=	nasm
++ASM_FLAGS	:=	-g -f elf64
++
++%:
++	echo \
++	'(load "./project/ass1/pc.scm")' \
++	'(load "./project/ass1/sexpr-parser.scm")' \
++	'(load "./project/ass2/pattern-matcher.scm")' \
++	'(load "./project/ass2/qq.scm")' \
++	'(load "./project/ass2/tag-parser.scm")' \
++	'(load "./project/ass3/semantic-analyzer.scm")' \
++	'(load "./project/compiler.scm")' \
++	'(load "./project/builtins.scm")' \
++	'(compile-scheme-file "$(MAKECMDGOALS).scm" "$(MAKECMDGOALS).s")' | scheme -q
++	$(ASM) $(ASM_FLAGS) $(MAKECMDGOALS).s -o $(MAKECMDGOALS).o
++	$(CC) -c $(CC_FLAGS) ./project/util.c -o util.o
++	$(CC) $(CC_FLAGS) $(MAKECMDGOALS).o util.o -o $(MAKECMDGOALS)
+diff --git a/ass1/pc.scm b/ass1/pc.scm
+new file mode 100644
+index 0000000..0320d15
+--- /dev/null
++++ b/ass1/pc.scm
+@@ -0,0 +1,440 @@
++;;; pc.scm
++;;; A simple implementation of parsing combinators
++;;;
++;;; Programmer: Mayer Goldberg, 2017
++
++(define with (lambda (s f) (apply f s)))
++
++(define *marker-length* 8)
++
++(define <end-of-input>
++  (lambda (s ret-match ret-none)
++    (if (null? s)
++	(ret-match '() '())
++	(ret-none '()))))
++
++(define const
++  (lambda (pred?)
++    (lambda (s ret-match ret-none)
++      (cond ((null? s) (ret-none '()))
++	    ((pred? (car s)) (ret-match (car s) (cdr s)))
++	    (else (ret-none '()))))))
++
++(define <epsilon>
++  (lambda (s ret-match ret-none)
++    (ret-match '() s)))
++
++(define <fail>
++  (lambda (s ret-match ret-none)
++    (ret-none '())))
++
++(define caten
++  (let ((binary-caten
++	 (lambda (<p1> <p2>)
++	   (lambda (s ret-match ret-none)
++	     (<p1> s
++		 (lambda (e1 s)
++		   (<p2> s
++		       (lambda (e2 s)
++			 (ret-match (cons e1 e2) s))
++		       ret-none))
++		 ret-none)))))
++    (lambda ps
++      (fold-right binary-caten <epsilon> ps))))
++
++(define disj
++  (let ((binary-disj
++	 (lambda (<p1> <p2>)
++	   (lambda (s ret-match ret-none)
++	     (<p1> s
++		 ret-match
++		 (lambda (w)
++		   (<p2> s
++		       ret-match
++		       ret-none)))))))
++    (lambda ps
++      (fold-right binary-disj <fail> ps))))
++
++(define delayed
++  (lambda (thunk)
++    (lambda (s ret-match ret-none)
++      ((thunk) s ret-match ret-none))))
++
++(define star
++  (lambda (p)
++    (disj (pack-with (caten p (delayed (lambda () (star p))))
++		     cons)
++	  <epsilon>)))
++
++(define plus
++  (lambda (p)
++    (pack-with (caten p (star p))
++	       cons)))
++
++(define times
++  (lambda (<p> n)
++    (if (zero? n)
++	<epsilon>
++	(pack-with
++	 (caten <p> (times <p> (- n 1)))
++	 cons))))
++
++(define at-least
++  (lambda (<p> n)
++    (new (*parser <p>)
++	 (*times n)
++	 (*parser <p>)
++	 *star
++	 (*caten 2)
++	 (*pack-with
++	  (lambda (e^4 e^*)
++	    `(,@e^4 ,@e^*)))
++	 done)))
++
++(define pack
++  (lambda (p f)
++    (lambda (s ret-match ret-none)
++      (p s (lambda (e s) (ret-match (f e) s)) ret-none))))
++
++(define pack-with
++  (lambda (p f)
++    (lambda (s ret-match ret-none)
++      (p s (lambda (e s) (ret-match (apply f e) s)) ret-none))))
++
++(define diff
++  (lambda (<p1> <p2>)
++    (lambda (s ret-match ret-none)
++      (<p1> s
++	  (lambda (e w)
++	    (<p2> s (lambda _ (ret-none '()))
++		(lambda (w1) (ret-match e w))))
++	  ret-none))))
++
++(define maybe
++  (lambda (p)
++    (lambda (s ret-match ret-none)
++      (p s
++	 (lambda (e s) (ret-match `(#t ,e) s))
++	 (lambda (w) (ret-match `(#f #f) s))))))
++
++(define only-if
++  (lambda (p pred?)
++    (lambda (s ret-match ret-none)
++      (p s
++	 (lambda (e s)
++	   (if (pred? e)
++	       (ret-match e s)
++	       (ret-none '())))
++	 ret-none))))
++
++(define otherwise
++  (lambda (p message)
++    (lambda (s ret-match ret-none)
++      (p s
++	 ret-match
++	 (let ((marker
++		(format "-->[~a]"
++		  (list->string
++		   (list-head s *marker-length*)))))
++	   (lambda (w) (ret-none `(,@w ,message ,marker))))))))
++
++;;;
++
++(define ^char
++  (lambda (char=?)
++    (lambda (character)
++      (const
++       (lambda (ch)
++	 (char=? ch character))))))
++
++(define char (^char char=?))
++
++(define char-ci (^char char-ci=?))
++
++(define ^word
++  (lambda (char)
++    (lambda (word)
++      (apply caten (map char (string->list word))))))
++
++(define word (^word char))
++
++(define word-ci (^word char-ci))
++
++(define ^word-suffixes
++  (lambda (char)
++    (letrec ((loop
++	      (lambda (s)
++		(if (null? s)
++		    <epsilon>
++		    (maybe
++		     (caten (char (car s))
++			    (loop (cdr s))))))))
++      (lambda (suffix)
++	(loop (string->list suffix))))))
++
++(define word-suffixes (^word-suffixes char))
++
++(define word-suffixes-ci (^word-suffixes char-ci))
++
++(define ^word+suffixes
++  (lambda (word-suffixes)
++    (lambda (prefix suffix)
++      (caten (word prefix)
++	     (word-suffixes suffix)))))
++
++(define word+suffixes (^word+suffixes word-suffixes))
++
++(define word+suffixes-ci (^word+suffixes word-suffixes-ci))
++
++(define ^one-of
++  (lambda (char)
++    (lambda (word)
++      (apply disj (map char (string->list word))))))
++
++(define one-of (^one-of char))
++
++(define one-of-ci (^one-of char-ci))
++
++(define ^range
++  (lambda (char<=?)
++    (lambda (char-from char-to)
++      (const
++       (lambda (ch)
++	 (and (char<=? char-from ch)
++	      (char<=? ch char-to)))))))
++
++(define range (^range char<=?))
++
++(define range-ci (^range char-ci<=?))
++
++(define <any-char> (const (lambda (ch) #t)))
++
++(define <any> <any-char>)
++
++;;; <expr> {<sep> <expr>}*
++(define ^<separated-exprs>
++  (lambda (<expr> <sep>)
++    (new (*parser <expr>)
++	 
++	 (*parser <sep>)
++	 (*parser <expr>)
++	 (*caten 2)
++	 (*pack-with (lambda (_sep expr) expr))
++	 *star
++	 
++	 (*caten 2)
++	 (*pack-with cons)
++	 done)))
++
++;;;
++
++(define continue
++  (lambda (ds cs)
++    (with cs
++      (lambda (c . cs)
++	(c ds cs)))))
++
++(define new
++  (lambda cs
++    (continue '() cs)))
++
++(define done
++  (lambda (ds cs)
++    (with ds
++      (lambda (parser . ds)
++	(if (null? ds)
++	    parser
++	    (error 'done
++		   (format "The parser stack still contains ~a parsers!"
++		     (length ds))))))))
++
++(define *parser
++  (lambda (p)
++    (lambda (ds cs)
++      (continue `(,p . ,ds) cs))))
++
++(define unary
++  (lambda (f-unary)
++    (lambda (ds cs)
++      (with ds
++	(lambda (d . ds)
++	  (continue `(,(f-unary d) . ,ds) cs))))))
++
++(define *delayed
++  (lambda (thunk)
++    (lambda (ds cs)
++      (continue `(,(delayed thunk) . ,ds) cs))))
++
++(define binary
++  (lambda (f-binary)
++    (lambda (ds cs)
++      (with ds
++	(lambda (d2 d1 . ds)
++	  (continue `(,(f-binary d1 d2) . ,ds) cs))))))
++
++(define *dup
++  (lambda (ds cs)
++    (with ds
++      (lambda (d1 . ds)
++	(continue `(,d1 ,d1 . ,ds) cs)))))
++
++(define *swap
++  (lambda (ds cs)
++    (with ds
++      (lambda (d1 d2 . ds)
++	(continue `(,d2 ,d1 . ,ds) cs)))))
++
++(define *star (unary star))
++
++(define *plus (unary plus))
++
++(define *diff (binary diff))
++
++(define *pack (lambda (f) (unary (lambda (p) (pack p f)))))
++
++(define *pack-with (lambda (f) (unary (lambda (p) (pack-with p f)))))
++
++(define *only-if (lambda (pred?) (unary (lambda (p) (only-if p pred?)))))
++
++(define split-list
++  (lambda (s n ret-s1+s2)
++    (if (zero? n)
++	(ret-s1+s2 '() s)
++	(split-list (cdr s) (- n 1)
++		    (lambda (s1 s2)
++		      (ret-s1+s2 (cons (car s) s1) s2))))))
++
++(define nary
++  (lambda (f-n-ary n)
++    (lambda (ds cs)
++      (split-list ds n
++       (lambda (sgra ds)
++	 (continue
++	  `(,(apply f-n-ary (reverse sgra)) . ,ds) cs))))))
++
++(define *caten (lambda (n) (nary caten n)))
++
++(define *disj (lambda (n) (nary disj n)))
++
++(define *maybe (unary maybe))
++
++(define *otherwise
++  (lambda (string)
++    (unary
++     (lambda (p)
++       (otherwise p string)))))
++
++(define *times
++  (lambda (n)
++    (unary
++     (lambda (<p>)
++       (times <p> n)))))
++
++(define *at-least
++  (lambda (n)
++    (unary
++     (lambda (<p>)
++       (at-least <p> n)))))
++
++(define followed-by
++  (lambda (<p1> <p2>)
++    (lambda (s ret-match+rest ret-none)
++      (<p1> s
++	    (lambda (e s)
++	      (<p2> s
++		    (lambda (_e _s)
++		      (ret-match+rest e s))
++		    ret-none))
++	    ret-none))))
++
++(define not-followed-by
++  (lambda (<p1> <p2>)
++    (new (*parser <p1>)
++	 (*parser <p2>) *maybe
++	 (*caten 2)
++	 (*pack-with
++	  (lambda (e1 ?e2)
++	    (with ?e2
++	      (lambda (found-e2? _)
++		`(,e1 ,found-e2?)))))
++	 (*only-if
++	  (lambda (e1+found-e2?)
++	    (with e1+found-e2?
++	      (lambda (_ found-e2?)
++		(not found-e2?)))))
++	 (*pack-with
++	  (lambda (e1 _) e1))
++	 done)))
++
++(define *followed-by (binary followed-by))
++
++(define *not-followed-by (binary not-followed-by))
++
++(define *transformer
++  (lambda (^<p>)
++    (unary (lambda (<p>) (^<p> <p>)))))
++
++;;; 
++
++(define test-string
++  (lambda (parser string)
++    (parser (string->list string)
++	    (lambda (e s)
++	      `((match ,e)
++		(remaining ,(list->string s))))
++	    (lambda (w) `(failed with report: ,@w)))))
++
++(define test
++  (lambda (parser s)
++    (parser s
++	    (lambda (e s)
++	      `((match ,e)
++		(remaining ,s)))
++	    (lambda (w) `(failed with report: ,@w)))))
++
++;;;
++
++(define file->string
++  (lambda (filename)
++    (let ((input (open-input-file filename)))
++      (letrec ((run
++		(lambda ()
++		  (let ((e (read-char input)))
++		    (if (eof-object? e)
++			(begin
++			  (close-input-port input)
++			  '())
++			(cons e (run)))))))
++	(list->string (run))))))
++
++(define read-stdin-to
++  (lambda (end-of-input)
++    (let ((end-of-input-list (string->list end-of-input)))
++      (letrec ((state-init
++		(lambda (seen)
++		  (let ((ch (read-char)))
++		    (cond ((eof-object? ch)
++			   (error 'read-stdin-to
++			     (format "Marker ~a not reached"
++			       end-of-input)))
++			  ((char=? ch (car end-of-input-list))
++			   (state-seen seen `(,ch) (cdr end-of-input-list)))
++			  (else (state-init `(,ch ,@seen)))))))
++	       (state-seen
++		(lambda (seen-before seen-now end-of-input-list-rest)
++		  (if (null? end-of-input-list-rest)
++		      (list->string
++		       (reverse seen-before))
++		      (let ((ch (read-char)))
++			(cond ((eof-object? ch)
++			       (format "Marker ~a not reached"
++				 end-of-input))
++			      ((char=? ch (car end-of-input-list-rest))
++			       (state-seen seen-before
++					   `(,ch ,@seen-now)
++					   (cdr end-of-input-list-rest)))
++			      (else (state-init
++				     `(,ch ,@seen-now ,@seen-before)))))))))
++	(state-init '())))))
++
++;;; end-of-input
+diff --git a/ass1/sexpr-parser.scm b/ass1/sexpr-parser.scm
+new file mode 100644
+index 0000000..b95ba05
+--- /dev/null
++++ b/ass1/sexpr-parser.scm
+@@ -0,0 +1,846 @@
++(define <boolean>
++  (new
++   (*parser (char #\#))
++
++   (*parser (char-ci #\t))
++   (*parser (char-ci #\f))
++   (*disj 2)
++
++   (*caten 2)
++   (*delayed (lambda () <symbol>))
++   *not-followed-by
++   (*pack-with (lambda (sh b)
++                 (char-ci=? b #\t) ))
++   done))
++
++(define <charprefix>
++  (new
++   (*parser (char #\#))
++   (*parser (char #\\))
++   (*caten 2)
++   done))
++
++(define <visiblesimplechar>
++  (const (lambda (c)
++           (char>? c #\space))))
++
++(define <whitespace>
++  (new
++   (*parser <any>)
++   (*parser <visiblesimplechar>)
++   *diff
++   done))
++
++(define <whitespacenonewline>
++  (new
++   (*parser <any>)
++
++   (*parser <visiblesimplechar>)
++   (*parser (char #\newline))
++   (*disj 2)
++   *diff
++
++   done))
++
++(define <lambda>
++  (new
++   (*parser (char-ci #\l))
++   (*parser (char-ci #\a))
++   (*parser (char-ci #\m))
++   (*parser (char-ci #\b))
++   (*parser (char-ci #\d))
++   (*parser (char-ci #\a))
++   (*caten 6)
++   (*pack (lambda (_) #\λ))
++   done))
++
++(define <newline>
++  (new
++   (*parser (char-ci #\n))
++   (*parser (char-ci #\e))
++   (*parser (char-ci #\w))
++   (*parser (char-ci #\l))
++   (*parser (char-ci #\i))
++   (*parser (char-ci #\n))
++   (*parser (char-ci #\e))
++   (*caten 7)
++   (*pack (lambda (_) #\newline))
++   done))
++
++(define <nul>
++  (new
++   (*parser (char-ci #\n))
++   (*parser (char-ci #\u))
++   (*parser (char-ci #\l))
++   (*caten 3)
++   (*pack (lambda (_) #\nul))
++   done))
++
++(define <page>
++  (new
++   (*parser (char-ci #\p))
++   (*parser (char-ci #\a))
++   (*parser (char-ci #\g))
++   (*parser (char-ci #\e))
++   (*caten 4)
++   (*pack (lambda (_) #\page))
++   done))
++
++(define <return>
++  (new
++   (*parser (char-ci #\r))
++   (*parser (char-ci #\e))
++   (*parser (char-ci #\t))
++   (*parser (char-ci #\u))
++   (*parser (char-ci #\r))
++   (*parser (char-ci #\n))
++   (*caten 6)
++   (*pack (lambda (_) #\return))
++   done))
++
++(define <space>
++  (new
++   (*parser (char-ci #\s))
++   (*parser (char-ci #\p))
++   (*parser (char-ci #\a))
++   (*parser (char-ci #\c))
++   (*parser (char-ci #\e))
++   (*caten 5)
++   (*pack (lambda (_) #\space))
++   done))
++
++(define <tab>
++  (new
++   (*parser (char-ci #\t))
++   (*parser (char-ci #\a))
++   (*parser (char-ci #\b))
++   (*caten 3)
++   (*pack (lambda (_) #\tab))
++   done))
++
++(define <namedchar>
++  (new
++   (*parser <lambda>)
++   (*parser <newline>)
++   (*parser <nul>)
++   (*parser <page>)
++   (*parser <return>)
++   (*parser <space>)
++   (*parser <tab>)
++   (*disj 7)
++   done))
++
++(define <hexchar>
++  (new
++   (*parser (range #\0 #\9))
++   (*parser (range-ci #\a #\f))
++   (*disj 2)
++   done))
++
++(define <hexunicodechar>
++  (new
++   (*parser (char-ci #\x))
++
++   (*parser <hexchar>)
++   *plus
++
++   (*caten 2)
++   (*pack-with (lambda (x c)
++                 (integer->char (string->number (list->string c) 16))))
++   done))
++
++(define <char>
++  (new
++   (*parser <charprefix>)
++
++   (*parser <namedchar>)
++   (*parser <hexunicodechar>)
++   (*parser <visiblesimplechar>)
++   (*disj 3)
++
++   (*caten 2)
++   (*pack cadr)
++   done))
++
++(define <natural>
++  (new
++   (*parser (range #\0 #\9))
++   *plus
++   done))
++
++(define <integer>
++  (new
++   (*parser (char #\+))
++   (*parser (char #\-))
++   (*disj 2)
++   *maybe
++   (*pack-with (lambda (? s)
++                 (if ?
++                     (list s)
++                     '())))
++
++   (*parser <natural>)
++
++   (*caten 2)
++   (*pack-with append)
++   done))
++
++(define <fraction>
++  (new
++   (*parser <integer>)
++   (*parser (char #\/))
++   (*parser <natural>)
++   (*caten 3)
++   (*pack-with (lambda (int / nat) `(,@int ,/ ,@nat)))
++   done))
++
++(define <number>
++  (new
++   (*parser <fraction>)
++   (*parser <integer>)
++   (*disj 2)
++   (*pack (lambda (n)
++            (string->number (list->string n))))
++   (*delayed (lambda () <infixsymbol>))
++   *not-followed-by
++   done))
++
++(define <stringliteralchar>
++  (new
++   (*parser <any>)
++   (*only-if (lambda (c)
++	             (not (or (char=? c #\\)
++			                  (char=? c #\")))))
++   done))
++
++(define <stringmetachar>
++  (new
++   (*parser (char #\\))
++
++   (*parser (char #\\))
++   (*parser (char #\"))
++   (*parser (char-ci #\t))
++   (*parser (char-ci #\f))
++   (*parser (char-ci #\n))
++   (*parser (char-ci #\r))
++   (*disj 6)
++
++   (*caten 2)
++   (*pack-with (lambda (_ c)
++                 (cond ((char-ci=? c #\t) #\tab)
++                       ((char-ci=? c #\f) #\page)
++                       ((char-ci=? c #\n) #\newline)
++                       ((char-ci=? c #\r) #\return)
++                       (else c))))
++   done))
++
++
++(define <stringhexchar>
++  (new
++   (*parser (char #\\))
++   (*parser <hexunicodechar>)
++   (*parser (char #\;))
++
++   (*caten 3)
++   (*pack cadr)
++   done))
++
++(define <stringchar>
++  (new
++   (*parser <stringhexchar>)
++   (*parser <stringmetachar>)
++   (*parser <stringliteralchar>)
++   (*disj 3)
++   done))
++
++(define <string>
++  (new
++   (*parser (char #\"))
++
++   (*parser <stringchar>)
++   *star
++
++   (*parser (char #\"))
++
++   (*caten 3)
++   (*pack-with (lambda (fdq str sdq)
++		             (list->string str)))
++   done))
++
++(define <symbolcharnodigits>
++  (new
++   (*parser (range #\a #\z))
++   (*parser (range #\A #\Z))
++   (*pack (lambda (c)
++            (integer->char (+ (char->integer c) (char- #\a #\A)))))
++   (*parser (const (lambda (e)
++                     (member e '(#\: #\! #\$ #\^ #\* #\- #\_ #\= #\+ #\< #\> #\? #\/)))))
++   (*disj 3)
++   done))
++
++(define <symbolchar>
++  (new
++   (*parser (range #\0 #\9))
++   (*parser <symbolcharnodigits>)
++   (*disj 2)
++   done))
++
++(define <symbol>
++  (new
++   (*parser <symbolchar>)
++   *plus
++   (*pack (lambda (e)
++            (string->symbol (list->string e))))
++   done))
++
++(define <properlist>
++  (new
++   (*parser (char #\())
++
++   (*parser <whitespace>)
++   *star
++
++   (*parser (char #\)))
++
++   (*caten 2)
++   (*pack (lambda (_) '()))
++
++   (*delayed (lambda () <sexpr>))
++   *star
++
++   (*parser (char #\)))
++
++   (*caten 2)
++   (*pack car)
++
++   (*disj 2)
++   (*caten 2)
++   (*pack cadr)
++   done))
++
++(define <improperlist>
++  (new
++   (*parser (char #\())
++
++   (*parser <whitespace>)
++   *star
++
++   (*delayed (lambda () <sexprnowhitespace>))
++
++   (*parser <whitespace>)
++   *plus
++
++   (*caten 2)
++   (*pack car)
++   *plus
++
++   (*parser (char #\.))
++   (*parser <whitespace>)
++   (*delayed (lambda () <sexpr>))
++   (*parser (char #\)))
++
++   (*caten 7)
++   (*pack-with (lambda (l w1 e1 d w2 e2 r) `(,@e1 . ,e2)))
++   done))
++
++(define <vector>
++  (new
++   (*parser (char #\#))
++   (*parser <properlist>)
++   (*caten 2)
++   (*pack-with (lambda (s l) (list->vector l)))
++   done))
++
++(define <quoted>
++  (new
++   (*parser (char #\'))
++   (*delayed (lambda () <sexprnowhitespace>))
++   (*caten 2)
++   (*pack-with (lambda (q s) (list 'quote s)))
++   done))
++
++(define <quasiquoted>
++  (new
++   (*parser (char #\`))
++   (*delayed (lambda () <sexprnowhitespace>))
++   (*caten 2)
++   (*pack-with (lambda (q s) (list 'quasiquote s)))
++   done))
++
++(define <unquoted>
++  (new
++   (*parser (char #\,))
++   (*delayed (lambda () <sexprnowhitespace>))
++   (*caten 2)
++   (*pack-with (lambda (q s) (list 'unquote s)))
++   done))
++
++(define <unquoteandspliced>
++  (new
++   (*parser (char #\,))
++   (*parser (char #\@))
++   (*delayed (lambda () <sexprnowhitespace>))
++   (*caten 3)
++   (*pack-with (lambda (q at s) (list 'unquote-splicing s)))
++   done))
++
++(define <cbnamesyntax1>
++  (new
++   (*parser (char #\@))
++   (*delayed (lambda () <sexpr>))
++   (*caten 2)
++   (*pack cadr)
++   done))
++
++(define <cbnamesyntax2>
++  (new
++   (*parser (char #\{))
++   (*delayed (lambda () <sexpr>))
++   (*parser (char #\}))
++   (*caten 3)
++   (*pack cadr)
++   done))
++
++(define <cbname>
++  (new
++   (*parser <cbnamesyntax1>)
++   (*parser <cbnamesyntax2>)
++   (*disj 2)
++   (*pack (lambda (s) `(cbname ,s)))
++   done))
++
++(define <infixprefixextensionprefix>
++  (new
++   (*parser (char #\#))
++
++   (*parser (char #\#))
++   (*parser (char #\%))
++   (*disj 2)
++
++   (*caten 2)
++   done))
++
++(define <infixneg>
++  (new
++   (*parser (char #\-))
++
++   (*delayed (lambda () <infixarraygetandfuncall>))
++   (*delayed (lambda () <infixatomic>))
++   (*disj 2)
++
++   (*caten 2)
++   (*pack-with (lambda (_ e)
++                 `(- ,e)))
++   done))
++
++(define <infixaddandsub>
++  (new
++   (*parser <whitespace>)
++   *star
++
++   (*delayed (lambda () <infixmulanddiv>))
++
++   (*parser <whitespace>)
++   *star
++
++   (*parser (char #\+))
++   (*parser (char #\-))
++   (*disj 2)
++   (*pack (lambda (c)
++	          (string->symbol (list->string (list c)))))
++
++   (*parser <whitespace>)
++   *star
++
++   (*delayed (lambda () <infixmulanddiv>))
++
++   (*caten 4)
++   (*pack-with (lambda (w1 op w2 e)
++                 (list op e)))
++   *star
++
++   (*caten 2)
++   (*pack-with (lambda (first rest)
++		             (infix->prefix first rest)))
++
++   (*parser <whitespace>)
++   *star
++
++   (*caten 3)
++   (*pack cadr)
++   done))
++
++(define <infixmulanddiv>
++  (new
++   (*delayed (lambda () <infixpow>))
++
++   (*parser <whitespace>)
++   *star
++
++   (*parser (char #\*))
++   (*parser (char #\/))
++   (*disj 2)
++   (*pack (lambda (c)
++	    (string->symbol (list->string (list c)))))
++
++   (*parser <whitespace>)
++   *star
++
++   (*delayed (lambda () <infixpow>))
++
++   (*caten 4)
++   (*pack-with (lambda (w1 op w2 e)
++                 (list op e)))
++   *star
++
++   (*caten 2)
++   (*pack-with (lambda (first rest)
++		             (infix->prefix first rest)))
++   done))
++
++(define <powersymbol>
++  (new
++   (*parser (char #\^))
++
++   (*parser (char #\*))
++   (*times 2)
++
++   (*disj 2)
++   (*pack (lambda (_) 'expt))
++   done))
++
++(define <infixpow>
++  (new
++   (*delayed (lambda () <infixarraygetandfuncall>))
++   (*delayed (lambda () <infixatomic>))
++   (*delayed (lambda () <infixneg>))
++   (*disj 3)
++
++   (*parser <whitespace>)
++   *star
++
++   (*parser <powersymbol>)
++
++   (*parser <whitespace>)
++   *star
++
++   (*delayed (lambda () <infixarraygetandfuncall>))
++   (*delayed (lambda () <infixatomic>))
++   (*delayed (lambda () <infixneg>))
++   (*disj 3)
++
++   (*caten 4)
++   (*pack-with (lambda (w1 op w2 e)
++                 (list op e)))
++   *star
++
++   (*caten 2)
++   (*pack-with (lambda (first rest)
++		             (infix->prefix first rest)))
++   done))
++
++(define <infixarglist>
++  (new
++   (*delayed (lambda () <infixexpression>))
++
++   (*parser (char #\,))
++   (*delayed (lambda () <infixexpression>))
++   (*caten 2)
++   (*pack cadr)
++   *star
++
++   (*caten 2)
++   (*pack-with (lambda (first rest)
++                 (cons first rest)))
++
++   (*parser <whitespace>)
++   *star
++   (*pack (lambda (w) '()))
++
++   (*disj 2)
++   done))
++
++(define <infixarraygetandfuncall>
++  (new
++   (*delayed (lambda () <infixatomic>))
++
++   (*parser (char #\())
++   (*delayed (lambda () <infixarglist>))
++   (*parser (char #\)))
++   (*caten 3)
++   (*pack-with (lambda (l e r)
++                 (cons '() e)))
++
++   (*parser (char #\[))
++   (*delayed (lambda () <infixexpression>))
++   (*parser (char #\]))
++   (*caten 3)
++   (*pack-with (lambda (l e r)
++                 `(vector-ref ,e)))
++
++   (*disj 2)
++   *plus
++   (*caten 2)
++   (*pack-with (lambda (e1 e2)
++       (infix->prefix e1 e2)))
++   done))
++
++(define <infixparen>
++  (new
++   (*parser (char #\())
++   (*delayed (lambda () <infixexpression>))
++   (*parser (char #\)))
++   (*caten 3)
++   (*pack cadr)
++   done))
++
++(define <infixsexprescape>
++  (new
++   (*parser <infixprefixextensionprefix>)
++   (*delayed (lambda () <sexpr>))
++   (*caten 2)
++   (*pack cadr)
++   done))
++
++(define <opsymbol>
++  (new
++   (*parser (const (lambda (e)
++                     (member e '(#\^ #\* #\- #\+ #\/)))))
++
++   (*parser (char #\*))
++   (*times 2)
++
++   (*disj 2)
++   done))
++
++(define <infixsymbolchar>
++  (new
++   (*parser <symbolchar>)
++   (*parser <opsymbol>)
++   *diff
++   done))
++
++(define <infixsymbol>
++  (new
++   (*parser <infixsymbolchar>)
++   *plus
++   (*pack (lambda (e)
++            (string->symbol (list->string e))))
++   done))
++
++(define <infixatomic>
++  (new
++   (*parser <whitespace>)
++   (*delayed (lambda () <infixlinecomment>))
++   (*delayed (lambda () <infixexprcomment>))
++   (*disj 3)
++   *star
++
++   (*parser <infixsexprescape>)
++   (*parser <infixparen>)
++   (*parser <number>)
++   (*parser <infixsymbol>)
++   (*disj 4)
++
++   (*parser <whitespace>)
++   (*delayed (lambda () <infixlinecomment>))
++   (*delayed (lambda () <infixexprcomment>))
++   (*disj 3)
++   *star
++
++   (*caten 3)
++   (*pack cadr)
++   done))
++
++(define <anythingexceptnewline>
++  (new
++   (*parser <any>)
++   (*parser (char #\newline))
++
++   *diff
++   done))
++
++(define <linecomment>
++  (new
++   (*parser (char #\;))
++
++   (*parser <anythingexceptnewline>)
++   *star
++
++   (*parser (char #\newline))
++   (*parser <end-of-input>)
++   (*disj 2)
++   (*caten 3)
++   done))
++
++(define <sexprcomment>
++  (new
++   (*parser (char #\#))
++   (*parser (char #\;))
++   (*delayed (lambda () <sexpr>))
++   (*caten 3)
++   done))
++
++(define <infixlinecomment> <linecomment>)
++
++(define <infixexprcomment>
++  (new
++   (*parser (char #\#))
++   (*parser (char #\;))
++   (*delayed (lambda () <infixexpression>))
++   (*caten 3)
++   done))
++
++(define <infixexpressioncore>
++  (new
++   (*parser <infixsexprescape>)
++   (*parser <infixaddandsub>)
++   (*parser <infixmulanddiv>)
++   (*parser <infixpow>)
++   (*parser <infixarraygetandfuncall>)
++   (*parser <infixneg>)
++   (*parser <infixatomic>)
++   (*disj 7)
++   done))
++
++(define <infixexpressionwithwhitespace>
++  (new
++   (*parser <whitespace>)
++   (*parser <infixexprcomment>)
++   (*parser <infixlinecomment>)
++   (*disj 3)
++   *star
++
++   (*parser <infixexpressioncore>)
++
++   (*parser <whitespace>)
++   (*parser <infixexprcomment>)
++   (*parser <infixlinecomment>)
++   (*disj 3)
++   *star
++
++   (*caten 3)
++   (*pack cadr)
++
++   done))
++
++(define <infixexpressionwithwhitespacenonewline>
++  (new
++   (*parser <whitespacenonewline>)
++   (*parser <infixexprcomment>)
++   (*parser <infixlinecomment>)
++   (*disj 3)
++   *star
++
++   (*parser <infixexpressioncore>)
++
++   (*parser <whitespacenonewline>)
++   (*parser <infixexprcomment>)
++   (*parser <infixlinecomment>)
++   (*disj 3)
++   *star
++
++   (*caten 3)
++   (*pack cadr)
++
++   done))
++
++(define <infixexpression> <infixexpressionwithwhitespace>)
++
++(define <infixextension>
++  (new
++   (*parser <infixprefixextensionprefix>)
++   (*parser <infixexpression>)
++   (*caten 2)
++   (*pack cadr)
++   done))
++
++(define <sexprcore>
++  (new
++   (*parser <boolean>)
++   (*parser <char>)
++   (*parser <number>)
++   (*parser <symbol>)
++   (*parser <string>)
++   (*parser <properlist>)
++   (*parser <improperlist>)
++   (*parser <vector>)
++   (*parser <quoted>)
++   (*parser <quasiquoted>)
++   (*parser <unquoteandspliced>)
++   (*parser <unquoted>)
++   (*parser <cbname>)
++   (*parser <infixextension>)
++   (*disj 14)
++   done))
++
++(define <sexprwithwhitespace>
++  (new
++   (*parser <whitespace>)
++   (*parser <sexprcomment>)
++   (*parser <linecomment>)
++   (*disj 3)
++   *star
++
++   (*parser <sexprcore>)
++
++   (*parser <whitespace>)
++   (*parser <sexprcomment>)
++   (*parser <linecomment>)
++   (*disj 3)
++   *star
++
++   (*caten 3)
++   (*pack cadr)
++   done))
++
++
++(define <sexprnowhitespace>
++  (new
++   (*parser <sexprcomment>)
++   (*parser <linecomment>)
++   (*disj 2)
++   *star
++
++   (*parser <sexprcore>)
++
++   (*parser <sexprcomment>)
++   (*parser <linecomment>)
++   (*disj 2)
++   *star
++
++   (*caten 3)
++   (*pack cadr)
++   done))
++
++(define <sexpr> <sexprwithwhitespace>)
++
++(define infix->prefix
++  (lambda (first rest)
++    (if (null? rest)
++        first
++        (letrec ((op (caar rest))
++                 (second (if (null? (cdar rest)) '() (cadar rest)))
++                 (loop (lambda (acc rest)
++                         (if (null? rest)
++                             acc
++                             (let ((op (caar rest))
++                                   (second (if (null? (cdar rest)) '() (cadar rest))))
++                               (cond ((null? op)
++                                      (loop (cons acc (cdar rest)) (cdr rest)))
++                                     ((eq? op 'expt)
++                                      (list op acc (infix->prefix second (cdr rest))))
++                                     (else
++                                      (loop (list op acc second) (cdr rest)))))))))
++          (cond ((null? op)
++                 (loop (cons first (cdar rest)) (cdr rest)))
++                ((eq? op 'expt)
++                 (list op first (infix->prefix second (cdr rest))))
++                (else
++                 (loop (list op first second) (cdr rest))))))))
++
++(define flatten
++  (lambda (l)
++  (cond ((null? l) '())
++        ((pair? l) (append (flatten (car l)) (cadr l)))
++          (else (list l)))))
+diff --git a/ass2/tag-parser.scm b/ass2/tag-parser.scm
+new file mode 100644
+index 0000000..505ad96
+--- /dev/null
++++ b/ass2/tag-parser.scm
+@@ -0,0 +1,259 @@
++;(load "qq.scm")
++
++(define parse
++  (lambda (e)
++    (cond ((quote? e) `(const ,@(cdr e)))
++          ((quasiquote? e) (parse (expand-qq (cadr e))))
++          ((constant? e) `(const ,e))
++          ((if3? e) (make-if3 e))
++          ((or? e) (make-or e))
++          ((and? e) (make-and e))
++          ((lambda? e) (make-lambda e))
++          ((seq? e) (make-seq e))
++          ((applic? e) (make-applic e))
++          ((set!? e) (make-set e))
++          ((define? e) (make-define e))
++          ((cond? e) (make-cond e))
++          ((let? e) (make-let e))
++          ((let*? e) (make-let* e))
++          ((letrec? e) (make-letrec e))
++          ((variable? e) `(var ,e))
++          (else (errorf 'parser "Unknown form: ~a" e)))))
++
++(define *reserved-words*
++  '(and begin cond define do else if lambda
++    let let* letrec or quasiquote unquote
++    unquote-splicing quote set!))
++
++(define constant?
++  (let ((predicates (list null? vector? const?)))
++    (lambda (e)
++      (or (eq? e (void))
++          (ormap (lambda (p?) (p? e))
++                 predicates)))))
++
++(define quasiquote?
++  (lambda (e)
++    ((^quote? 'quasiquote) e)))
++
++(define variable?
++  (lambda (e)
++    (not (or (pair? e)
++             (member e *reserved-words*)))))
++
++(define if3?
++  (lambda (e)
++    (and (first-eq? e 'if)
++         (or (= (length e) 3)
++             (= (length e) 4)))))
++
++(define or?
++  (lambda (e)
++    (first-eq? e 'or)))
++
++(define and?
++  (lambda (e)
++    (first-eq? e 'and)))
++
++(define lambda?
++  (lambda (e)
++    (and (first-eq? e 'lambda)
++         (> (length e) 2))))
++
++(define seq?
++  (lambda (e)
++    (first-eq? e 'begin)))
++
++(define applic?
++  (lambda (e)
++    (and (pair? e)
++         (not (member (car e) *reserved-words*)))))
++
++(define set!?
++  (lambda (e)
++    (and (first-eq? e 'set!)
++         (= (length e) 3))))
++
++(define define?
++  (lambda (e)
++    (and (first-eq? e 'define)
++         (or (and (= (length e) 3)
++                  (not (pair? (cadr e))))
++             (and (> (length e) 2)
++                  (pair? (cadr e)))))))
++
++(define cond?
++  (lambda (e)
++    (and (first-eq? e 'cond)
++         (> (length e) 1))))
++
++(define let?
++  (lambda (e)
++    (and (first-eq? e 'let)
++         (let-base? e))))
++
++(define let*?
++  (lambda (e)
++    (and (first-eq? e 'let*)
++         (let-base? e))))
++
++(define letrec?
++  (lambda (e)
++    (and (first-eq? e 'letrec)
++         (let-base? e))))
++
++(define make-if3
++  (lambda (e)
++    (let ((test (cadr e))
++          (dit (caddr e))
++          (dif (if (= (length e) 4)
++                   (cadddr e)
++                   (void))))
++      `(if3 ,(parse test) ,(parse dit) ,(parse dif)))))
++
++(define make-or
++  (lambda (e)
++    (let ((exprs (cdr e)))
++      (if (null? exprs)
++          (parse '#f)
++          (if (null? (cdr exprs))
++              (parse (car exprs))
++              `(or ,(map parse exprs)))))))
++
++(define make-and
++  (lambda (e)
++    (letrec ((exprs (cdr e))
++             (make-ifs (lambda (l)
++                         (if (null? (cdr l))
++                             (car l)
++                             `(if ,(car l) ,(make-ifs (cdr l)) '#f)))))
++      (if (null? exprs)
++          (parse '#t)
++          (parse (make-ifs exprs))))))
++
++(define make-lambda
++  (lambda (e)
++    (let ((params (cadr e))
++          (body (cddr e)))
++      (cond ((list? params)
++             `(lambda-simple ,params ,(parse `(begin ,@body))))
++            ((pair? params)
++             `(lambda-opt ,@(split-improper-list params) ,(parse `(begin ,@body))))
++            (else
++             `(lambda-opt () ,params ,(parse `(begin ,@body))))))))
++
++(define make-seq
++  (lambda (e)
++    (if (= (length e) 1)
++        (parse (void))
++        (if (= (length e) 2)
++            (parse (cadr e))
++            `(seq ,(apply append (map eliminate-nested-seqs (cdr e))))))))
++
++(define make-applic
++  (lambda (e)
++    (let ((f (car e))
++          (args (cdr e)))
++      `(applic ,(parse f)
++               ,(if (null? args)
++                    '()
++                    (map parse args))))))
++
++(define make-set
++  (lambda (e)
++    `(set (var ,(cadr e)) ,(parse (caddr e)))))
++
++(define make-define
++  (lambda (e)
++    (if (pair? (cadr e))
++        (make-mit-define e)
++        (make-regular-define e))))
++
++(define make-regular-define
++  (lambda (e)
++    `(define (var ,(cadr e)) ,(parse (caddr e)))))
++
++(define make-mit-define
++  (lambda (e)
++    (let ((f (caadr e))
++          (params (cdadr e))
++          (body (cddr e)))
++      `(define (var ,f) ,(parse `(lambda ,params ,@body))))))
++
++(define make-cond
++  (lambda (e)
++    (letrec ((exprs (cdr e))
++             (make-ifs (lambda (l)
++                         (let ((test (caar l))
++                               (exp `(begin ,@(cdar l))))
++                           (cond ((eq? test 'else) exp)
++                                 ((null? (cdr l)) `(if ,test ,exp))
++                                 (else `(if ,test ,exp ,(make-ifs (cdr l)))))))))
++      (parse (make-ifs exprs)))))
++
++(define make-let
++  (lambda (e)
++    (let* ((bindings (cadr e))
++           (vars (map car bindings))
++           (values (map cadr bindings))
++           (body (cddr e)))
++      (parse `((lambda ,vars ,@body) ,@values)))))
++
++(define make-let*
++  (lambda (e)
++    (let ((bindings (cadr e))
++          (body (cddr e)))
++      (letrec ((make-lets (lambda (bindings body)
++                            (if (or (null? bindings)
++                                    (null? (cdr bindings)))
++                                `(let ,bindings ,@body)
++                                (let ((vars (map car bindings))
++                                      (values (map cadr bindings)))
++                                  `(let ((,(car vars) ,(car values))) ,(make-lets (cdr bindings) body)))))))
++            (parse (make-lets bindings body))))))
++
++(define make-letrec
++  (lambda (e)
++    (let* ((bindings (cadr e))
++           (vars (map car bindings))
++           (values (map cadr bindings))
++           (let-bindings (map (lambda (v) `(,v #f)) vars))
++           (body (cddr e))
++           (new-body `(begin ,@(map (lambda (var val)
++                                     `(set! ,var ,val))
++                                   vars values)
++                             (let () ,@body))))
++      (parse `(let ,let-bindings ,new-body)))))
++
++(define first-eq?
++  (lambda (e k)
++    (and (pair? e)
++         (eq? (car e) k))))
++
++(define split-improper-list
++  (lambda (l)
++    (letrec ((loop (lambda (l acc)
++                     (if (not (pair? l))
++                         (list acc l)
++                         (loop (cdr l) `(,@acc ,(car l)))))))
++      (loop l '()))))
++
++(define eliminate-nested-seqs
++  (lambda (e)
++    (if (seq? e)
++        (apply append (map eliminate-nested-seqs (cdr e)))
++        (list (parse e)))))
++
++(define let-base?
++  (lambda (e)
++    (letrec ((check-unique (lambda (rest)
++                             (or (null? rest)
++                                 (and (not (member (car rest) (cdr rest)))
++                                      (check-unique (cdr rest)))))))
++      (and (> (length e) 2)
++           (let ((bindings (cadr e)))
++             (or (null? bindings)
++                 (if (first-eq? e 'let)
++                     (let ((vars (map car bindings)))
++                       (check-unique vars))
++                     #t)))))))
+diff --git a/ass3/semantic-analyzer.scm b/ass3/semantic-analyzer.scm
+new file mode 100644
+index 0000000..e4f0c65
+--- /dev/null
++++ b/ass3/semantic-analyzer.scm
+@@ -0,0 +1,516 @@
++(define remove-applic-lambda-nil
++  (lambda (e)
++    (let ((tag (car e)))
++      (cond ((eq? tag 'if3)
++             (let ((test (cadr e))
++                   (dit (caddr e))
++                   (dif (cadddr e)))
++               `(if3 ,(remove-applic-lambda-nil test)
++                     ,(remove-applic-lambda-nil dit)
++                     ,(remove-applic-lambda-nil dif))))
++            ((eq? tag 'or) `(or ,(map remove-applic-lambda-nil (cadr e))))
++            ((eq? tag 'define)
++             (let ((var (cadr e))
++                   (val (caddr e)))
++               `(define ,var ,(remove-applic-lambda-nil val))))
++            ((eq? tag 'set)
++             (let ((var (cadr e))
++                   (val (caddr e)))
++               `(set ,var ,(remove-applic-lambda-nil val))))
++            ((eq? tag 'seq) `(seq ,(map remove-applic-lambda-nil (cadr e))))
++            ((eq? tag 'lambda-simple)
++             (let ((params (cadr e))
++                   (body (caddr e)))
++               `(lambda-simple ,params ,(remove-applic-lambda-nil body))))
++            ((eq? tag 'lambda-opt)
++             (let ((params (cadr e))
++                   (opt-param (caddr e))
++                   (body (cadddr e)))
++               `(lambda-opt ,params ,opt-param ,(remove-applic-lambda-nil body))))
++            ((eq? tag 'applic)
++             (let ((f (cadr e))
++                   (args (caddr e)))
++               (if (and (eq? (car f) 'lambda-simple)
++                        (null? (cadr f))
++                        (null? args))
++                   (remove-applic-lambda-nil (caddr f))
++                   `(applic ,(remove-applic-lambda-nil f)
++                            ,(map remove-applic-lambda-nil args)))))
++            (else e)))))
++
++(define box-set
++  (lambda (e)
++    (let ((tag (car e)))
++      (cond ((eq? tag 'if3)
++             (let ((test (cadr e))
++                   (dit (caddr e))
++                   (dif (cadddr e)))
++               `(if3 ,(box-set test)
++                     ,(box-set dit)
++                     ,(box-set dif))))
++            ((eq? tag 'or) `(or ,(map box-set (cadr e))))
++            ((eq? tag 'define)
++             (let ((var (cadr e))
++                   (val (caddr e)))
++                `(define ,var ,(box-set val))))
++            ((eq? tag 'set)
++             (let ((var (cadr e))
++                   (val (caddr e)))
++               `(set ,var ,(box-set val))))
++            ((eq? tag 'seq) `(seq ,(map box-set (cadr e))))
++            ((eq? tag 'lambda-simple)
++             (let ((params (cadr e))
++                   (body (caddr e)))
++               `(lambda-simple ,params
++                  ,(fold-left (lambda (acc param) (box-set-el acc param))
++                      (box-set body) (reverse params)))))
++            ((eq? tag 'lambda-opt)
++             (let* ((params (cadr e))
++                    (opt-param (caddr e))
++                    (all-params (append params (list opt-param)))
++                    (body (cadddr e)))
++               `(lambda-opt ,params ,opt-param
++                  ,(fold-left (lambda (acc param) (box-set-el acc param))
++                      (box-set body) (reverse all-params)))))
++            ((eq? tag 'applic)
++             (let ((f (cadr e))
++                   (args (caddr e)))
++               `(applic ,(box-set f) ,(map box-set args))))
++            (else e)))))
++
++(define box-set-el
++  (lambda (body el)
++    ;(printf "body: ~a el: ~a\n" body el)
++    (let ((bound-res (bound? body el 0))
++          (get-res (has-get? body el))
++          (set-res (has-set? body el)))
++      ;(printf "bound: ~a has-get: ~a has-set: ~a\n\n" bound-res get-res set-res)
++      (if (and bound-res get-res set-res)
++          (add-box-set (replace-gets-sets body el) el)
++          body))))
++
++(define pe->lex-pe
++  (lambda (e)
++    (pe->lex-pe-2 (pe->lex-pe-1 e))))
++
++(define pe->lex-pe-1
++  (lambda (e)
++    (let ((tag (car e)))
++      (cond ((eq? tag 'if3)
++             (let ((test (cadr e))
++                   (dit (caddr e))
++                   (dif (cadddr e)))
++               `(if3 ,(pe->lex-pe-1 test)
++                     ,(pe->lex-pe-1 dit)
++                     ,(pe->lex-pe-1 dif))))
++            ((eq? tag 'or) `(or ,(map pe->lex-pe-1 (cadr e))))
++            ((eq? tag 'define)
++             (let ((var (cadr e))
++                   (val (caddr e)))
++                `(define ,(pe->lex-pe-1 var) ,(pe->lex-pe-1 val))))
++            ((eq? tag 'set)
++             (let ((var (cadr e))
++                   (val (caddr e)))
++               `(set ,var ,(pe->lex-pe-1 val))))
++            ((eq? tag 'seq) `(seq ,(map pe->lex-pe-1 (cadr e))))
++            ((eq? tag 'lambda-simple)
++             (let* ((params (cadr e))
++                    (body (caddr e))
++                    (enumerated-params (map (lambda (p n) (cons p n)) params (enumerate params))))
++               `(lambda-simple ,params
++                  ,(fold-left (lambda (acc param) (var->lex-var acc (car param) (cdr param) 0))
++                     (pe->lex-pe-1 body) enumerated-params))))
++            ((eq? tag 'lambda-opt)
++             (let* ((params (cadr e))
++                    (opt-param (caddr e))
++                    (all-params (append params (list opt-param)))
++                    (body (cadddr e))
++                    (enumerated-params (map (lambda (p n) (cons p n)) all-params (enumerate all-params))))
++               `(lambda-opt ,params ,opt-param
++                  ,(fold-left (lambda (acc param) (var->lex-var acc (car param) (cdr param) 0))
++                     (pe->lex-pe-1 body) enumerated-params))))
++            ((eq? tag 'applic)
++             (let ((f (cadr e))
++                   (args (caddr e)))
++               `(applic ,(pe->lex-pe-1 f) ,(map pe->lex-pe-1 args))))
++            ((eq? tag 'box)
++             `(box ,(pe->lex-pe-1 (cadr e))))
++            ((eq? tag 'box-get)
++             `(box-get ,(pe->lex-pe-1 (cadr e))))
++            ((eq? tag 'box-set)
++             (let ((var (cadr e))
++                   (val (caddr e)))
++               `(box-set ,var ,(pe->lex-pe-1 val))))
++            (else e)))))
++
++(define pe->lex-pe-2
++  (lambda (e)
++    (let ((tag (car e)))
++      (cond ((eq? tag 'var)
++             `(fvar ,(cadr e)))
++            ((eq? tag 'if3)
++             (let ((test (cadr e))
++                   (dit (caddr e))
++                   (dif (cadddr e)))
++               `(if3 ,(pe->lex-pe-2 test)
++                     ,(pe->lex-pe-2 dit)
++                     ,(pe->lex-pe-2 dif))))
++            ((eq? tag 'or) `(or ,(map pe->lex-pe-2 (cadr e))))
++            ((eq? tag 'define)
++             (let ((var (cadr e))
++                   (val (caddr e)))
++                `(define ,(pe->lex-pe-2 var) ,(pe->lex-pe-2 val))))
++            ((eq? tag 'set)
++             (let ((var (cadr e))
++                   (val (caddr e)))
++               `(set ,(pe->lex-pe-2 var) ,(pe->lex-pe-2 val))))
++            ((eq? tag 'seq) `(seq ,(map pe->lex-pe-2 (cadr e))))
++            ((eq? tag 'lambda-simple)
++             (let ((params (cadr e))
++                   (body (caddr e)))
++               `(lambda-simple ,params ,(pe->lex-pe-2 body))))
++            ((eq? tag 'lambda-opt)
++             (let ((params (cadr e))
++                   (opt-param (caddr e))
++                   (body (cadddr e)))
++               `(lambda-opt ,params ,opt-param ,(pe->lex-pe-2 body))))
++            ((eq? tag 'applic)
++             (let ((f (cadr e))
++                   (args (caddr e)))
++               `(applic ,(pe->lex-pe-2 f) ,(map pe->lex-pe-2 args))))
++            ((eq? tag 'box)
++             `(box ,(pe->lex-pe-2 (cadr e))))
++            ((eq? tag 'box-get)
++             `(box-get ,(pe->lex-pe-2 (cadr e))))
++            ((eq? tag 'box-set)
++             (let ((var (cadr e))
++                   (val (caddr e)))
++               `(box-set ,(pe->lex-pe-2 var) ,(pe->lex-pe-2 val))))
++            (else e)))))
++
++(define annotate-tc
++  (lambda (e)
++    (annotate-tc-1 e #f)))
++
++(define annotate-tc-1
++  (lambda (e intp)
++    (let ((tag (car e)))
++      (cond ((eq? tag 'if3)
++             (let ((test (cadr e))
++                   (dit (caddr e))
++                   (dif (cadddr e)))
++               `(if3 ,(annotate-tc-1 test #f)
++                     ,(annotate-tc-1 dit intp)
++                     ,(annotate-tc-1 dif intp))))
++            ((eq? tag 'or) `(or (,@(map (lambda (el) (annotate-tc-1 el #f)) (without-last (cadr e)))
++                                ,(annotate-tc-1 (last (cadr e)) intp))))
++            ((eq? tag 'define)
++             (let ((var (cadr e))
++                   (val (caddr e)))
++                `(define ,(annotate-tc-1 var #f) ,(annotate-tc-1 val #f))))
++            ((eq? tag 'set)
++             (let ((var (cadr e))
++                   (val (caddr e)))
++               `(set ,(annotate-tc-1 var #f) ,(annotate-tc-1 val #f))))
++            ((eq? tag 'seq)
++              (let ((w-l (without-last (cadr e)))
++                    (l (last (cadr e))))
++                (if (null? l)
++                    '(seq ())
++                    `(seq (,@(map (lambda (el) (annotate-tc-1 el #f)) w-l)
++                           ,(annotate-tc-1 l intp))))))
++            ((eq? tag 'lambda-simple)
++             (let ((params (cadr e))
++                   (body (caddr e)))
++               `(lambda-simple ,params ,(annotate-tc-1 body #t))))
++            ((eq? tag 'lambda-opt)
++             (let ((params (cadr e))
++                   (opt-param (caddr e))
++                   (body (cadddr e)))
++               `(lambda-opt ,params ,opt-param ,(annotate-tc-1 body #t))))
++            ((eq? tag 'applic)
++             (let ((f (cadr e))
++                   (args (caddr e)))
++               (if intp
++                   `(tc-applic ,(annotate-tc-1 f #f) ,(map (lambda (el) (annotate-tc-1 el #f)) args))
++                   `(applic ,(annotate-tc-1 f #f) ,(map (lambda (el) (annotate-tc-1 el #f)) args)))))
++            ((eq? tag 'box-get)
++             `(box-get ,(annotate-tc-1 (cadr e) #f)))
++            ((eq? tag 'box-set)
++             (let ((var (cadr e))
++                   (val (caddr e)))
++               `(box-set ,(annotate-tc-1 var #f) ,(annotate-tc-1 val #f))))
++            (else e)))))
++
++(define bound?
++  (lambda (e v depth)
++    (let ((tag (car e)))
++      (cond ((eq? tag 'var)
++             (and (> depth 0)
++                  (eq? (cadr e) v)))
++            ((eq? tag 'if3)
++             (let ((test (cadr e))
++                   (dit (caddr e))
++                   (dif (cadddr e)))
++               (or (bound? test v depth)
++                   (bound? dit v depth)
++                   (bound? dif v depth))))
++            ((eq? tag 'or) (ormap (lambda (el) (bound? el v depth)) (cadr e)))
++            ((eq? tag 'define)
++             (let ((var (cadr e))
++                   (val (caddr e)))
++               (bound? val v depth)))
++            ((eq? tag 'set)
++             (let ((var (cadr e))
++                   (val (caddr e)))
++               (or (bound? var v depth)
++                   (bound? val v depth))))
++            ((eq? tag 'seq) (ormap (lambda (el) (bound? el v depth)) (cadr e)))
++            ((eq? tag 'lambda-simple)
++             (let ((params (cadr e))
++                   (body (caddr e)))
++               (if (not (member v params))
++                   (bound? body v (+ depth 1))
++                   #f)))
++            ((eq? tag 'lambda-opt)
++             (let ((params (cadr e))
++                   (opt-param (caddr e))
++                   (body (cadddr e)))
++               (if (not (or (member v params) (eq? v opt-param)))
++                   (bound? body v (+ depth 1))
++                   #f)))
++            ((eq? tag 'applic)
++             (let ((f (cadr e))
++                   (args (caddr e)))
++               (or (bound? f v depth)
++                   (ormap (lambda (el) (bound? el v depth)) args))))
++            ((eq? tag 'box)
++             (bound? (cadr e) v depth))
++            ((eq? tag 'box-set)
++             (let ((var (cadr e))
++                   (val (caddr e)))
++               (or (bound? var v depth)
++                   (bound? val v depth))))
++            ((eq? tag 'box-get)
++             (bound? (cadr e) v depth))
++            (else #f)))))
++
++(define has-get?
++  (lambda (e v)
++    ;(printf "e: ~a v: ~a\n" e v)
++    (let ((tag (car e)))
++      (cond ((eq? tag 'var)
++             (eq? (cadr e) v))
++            ((eq? tag 'if3)
++             (let ((test (cadr e))
++                   (dit (caddr e))
++                   (dif (cadddr e)))
++               (or (has-get? test v)
++                   (has-get? dit v)
++                   (has-get? dif v))))
++            ((eq? tag 'or) (ormap (lambda (el) (has-get? el v)) (cadr e)))
++            ((eq? tag 'define)
++             (let ((var (cadr e))
++                   (val (caddr e)))
++               (has-get? val v)))
++            ((eq? tag 'set)
++             (let ((var (cadr e))
++                   (val (caddr e)))
++               (has-get? val v)))
++            ((eq? tag 'seq) (ormap (lambda (el) (has-get? el v)) (cadr e)))
++            ((eq? tag 'lambda-simple)
++             (let ((params (cadr e))
++                   (body (caddr e)))
++               (if (not (member v params))
++                   (has-get? body v)
++                   #f)))
++            ((eq? tag 'lambda-opt)
++             (let ((params (cadr e))
++                   (opt-param (caddr e))
++                   (body (cadddr e)))
++               (if (not (or (member v params) (eq? v opt-param)))
++                   (has-get? body v)
++                   #f)))
++            ((eq? tag 'applic)
++             (let ((f (cadr e))
++                   (args (caddr e)))
++               (or (has-get? f v)
++                   (ormap (lambda (el) (has-get? el v)) args))))
++            ((eq? tag 'box)
++             (has-get? (cadr e) v))
++            ((eq? tag 'box-set)
++             (let ((var (cadr e))
++                   (val (caddr e)))
++               (has-get? val v)))
++            ((eq? tag 'box-get)
++             (has-get? (cadr e) v))
++            (else #f)))))
++
++(define has-set?
++  (lambda (e v)
++    (let ((tag (car e)))
++      (cond ((eq? tag 'if3)
++             (let ((test (cadr e))
++                   (dit (caddr e))
++                   (dif (cadddr e)))
++               (or (has-set? test v)
++                   (has-set? dit v)
++                   (has-set? dif v))))
++            ((eq? tag 'or) (ormap (lambda (el) (has-set? el v)) (cadr e)))
++            ((eq? tag 'define)
++             (let ((var (cadr e))
++                   (val (caddr e)))
++               (has-set? val v)))
++            ((eq? tag 'set)
++             (let ((var (cadr e))
++                   (val (caddr e)))
++               (or (eq? (cadr var) v)
++                   (has-set? val v))))
++            ((eq? tag 'seq) (ormap (lambda (el) (has-set? el v)) (cadr e)))
++            ((eq? tag 'lambda-simple)
++             (let ((params (cadr e))
++                   (body (caddr e)))
++               (if (not (member v params))
++                   (has-set? body v)
++                   #f)))
++            ((eq? tag 'lambda-opt)
++             (let ((params (cadr e))
++                   (opt-param (caddr e))
++                   (body (cadddr e)))
++               (if (not (or (member v params) (eq? v opt-param)))
++                   (has-set? body v)
++                   #f)))
++            ((eq? tag 'applic)
++             (let ((f (cadr e))
++                   (args (caddr e)))
++               (or (has-set? f v)
++                   (ormap (lambda (el) (has-set? el v)) args))))
++            ((eq? tag 'box-set)
++             (let ((var (cadr e))
++                   (val (caddr e)))
++               (or (eq? (cadr var) v)
++                   (has-set? val v))))
++            (else #f)))))
++
++(define replace-gets-sets
++  (lambda (e v)
++    (let ((tag (car e)))
++      (cond ((eq? tag 'var)
++             (if (eq? (cadr e) v)
++                 `(box-get ,e)
++                 e))
++            ((eq? tag 'if3)
++             (let ((test (cadr e))
++                   (dit (caddr e))
++                   (dif (cadddr e)))
++               `(if3 ,(replace-gets-sets test v)
++                     ,(replace-gets-sets dit v)
++                     ,(replace-gets-sets dif v))))
++            ((eq? tag 'or) `(or ,(map (lambda (el) (replace-gets-sets el v)) (cadr e))))
++            ((eq? tag 'define)
++             (let ((var (cadr e))
++                   (val (caddr e)))
++                `(define ,var ,(replace-gets-sets val v))))
++            ((eq? tag 'set)
++             (let ((var (cadr e))
++                   (val (caddr e)))
++               (if (eq? (cadr var) v)
++                   `(box-set ,var ,(replace-gets-sets val v))
++                   `(set ,var ,(replace-gets-sets val v)))))
++            ((eq? tag 'seq) `(seq ,(map (lambda (el) (replace-gets-sets el v)) (cadr e))))
++            ((eq? tag 'lambda-simple)
++             (let ((params (cadr e))
++                   (body (caddr e)))
++               (if (not (member v params))
++                   `(lambda-simple ,params ,(replace-gets-sets body v))
++                   e)))
++            ((eq? tag 'lambda-opt)
++             (let ((params (cadr e))
++                   (opt-param (caddr e))
++                   (body (cadddr e)))
++               (if (not (or (member v params) (eq? v opt-param)))
++                   `(lambda-opt ,params ,opt-param ,(replace-gets-sets body v))
++                   e)))
++            ((eq? tag 'applic)
++             (let ((f (cadr e))
++                   (args (caddr e)))
++               `(applic ,(replace-gets-sets f v) ,(map (lambda (el) (replace-gets-sets el v)) args))))
++            ((eq? tag 'box-set)
++             (let ((var (cadr e))
++                   (val (caddr e)))
++               `(box-set ,var ,(replace-gets-sets val v))))
++            (else e)))))
++
++(define add-box-set
++  (lambda (body v)
++    (if (eq? (car body) 'seq)
++        `(seq ((set (var ,v) (box (var ,v))) ,@(cadr body)))
++        `(seq ((set (var ,v) (box (var ,v))) ,body)))))
++
++(define var->lex-var
++  (lambda (e v minor depth)
++    (let ((tag (car e)))
++      (cond ((eq? tag 'var)
++             (if (eq? (cadr e) v)
++                 (if (= depth 0)
++                     `(pvar ,(cadr e) ,minor)
++                     `(bvar ,(cadr e) ,(- depth 1) ,minor))
++                 e))
++            ((eq? tag 'if3)
++             (let ((test (cadr e))
++                   (dit (caddr e))
++                   (dif (cadddr e)))
++               `(if3 ,(var->lex-var test v minor depth)
++                     ,(var->lex-var dit v minor depth)
++                     ,(var->lex-var dif v minor depth))))
++            ((eq? tag 'or) `(or ,(map (lambda (el) (var->lex-var el v minor depth)) (cadr e))))
++            ((eq? tag 'define)
++             (let ((var (cadr e))
++                   (val (caddr e)))
++                `(define ,(var->lex-var var v minor depth) ,(var->lex-var val v minor depth))))
++            ((eq? tag 'set)
++             (let ((var (cadr e))
++                   (val (caddr e)))
++               `(set ,(var->lex-var var v minor depth) ,(var->lex-var val v minor depth))))
++            ((eq? tag 'seq) `(seq ,(map (lambda (el) (var->lex-var el v minor depth)) (cadr e))))
++            ((eq? tag 'lambda-simple)
++             (let ((params (cadr e))
++                   (body (caddr e)))
++               (if (not (member v params))
++                   `(lambda-simple ,params ,(var->lex-var body v minor (+ depth 1)))
++                   e)))
++            ((eq? tag 'lambda-opt)
++             (let ((params (cadr e))
++                   (opt-param (caddr e))
++                   (body (cadddr e)))
++               (if (not (or (member v params) (eq? v opt-param)))
++                   `(lambda-opt ,params ,opt-param ,(var->lex-var body v minor (+ depth 1)))
++                   e)))
++            ((eq? tag 'applic)
++             (let ((f (cadr e))
++                   (args (caddr e)))
++               `(applic ,(var->lex-var f v minor depth) ,(map (lambda (el) (var->lex-var el v minor depth)) args))))
++            ((eq? tag 'box)
++             `(box ,(var->lex-var (cadr e) v minor depth)))
++            ((eq? tag 'box-get)
++             `(box-get ,(var->lex-var (cadr e) v minor depth)))
++            ((eq? tag 'box-set)
++             (let ((var (cadr e))
++                   (val (caddr e)))
++               `(box-set ,(var->lex-var var v minor depth) ,(var->lex-var val v minor depth))))
++            (else e)))))
++
++(define without-last
++    (lambda (l)
++      (if (or (null? l) (not (pair? (cdr l))))
++          '()
++          (cons (car l) (without-last (cdr l))))))
++
++(define last
++    (lambda (l)
++      (if (null? l)
++          '()
++          (if (not (pair? (cdr l)))
++              (car l)
++              (last (cdr l))))))
++
+diff --git a/builtins.scm b/builtins.scm
+new file mode 100644
+index 0000000..70f9d50
+--- /dev/null
++++ b/builtins.scm
+@@ -0,0 +1,43 @@
++(define -
++  (lambda x
++    (if (null? (cdr x))
++        (* (car x) -1)
++        (+ (car x) (* (apply + (cdr x)) -1)))))
++
++(define zero? (lambda (n) (= n 0)))
++(define list (lambda x x))
++(define null? (lambda (x) (eq? x '())))
++(define number? rational?)
++
++(define fold-right
++  (lambda (f init l)
++    (if (null? l)
++        init
++        (f (car l)
++           (fold-right f init (cdr l))))))
++
++(define append
++  (lambda x
++    (if (null? (cdr x))
++        (car x)
++        (letrec ((append2 (lambda (l1 l2)
++                            (if (null? l1)
++                                l2
++                                (if (not (pair? l1))
++                                    l1
++                                    (cons (car l1) (append2 (cdr l1) l2)))))))
++          (fold-right append2 '() x)))))
++
++(define map
++  (lambda (f . s)
++    (letrec ((map1 (lambda (f s)
++                     (if (null? s)
++                         '()
++                         (cons (f (car s))
++                               (map1 f (cdr s))))))
++             (maplist (lambda (f s)
++                        (if (null? (car s))
++                            '()
++                            (cons (apply f (map1 car s))
++                                  (maplist f (map1 cdr s)))))))
++      (maplist f s))))
+diff --git a/compiler.scm b/compiler.scm
+new file mode 100644
+index 0000000..b4ea36b
+--- /dev/null
++++ b/compiler.scm
+@@ -0,0 +1,755 @@
++(define pipeline
++  (lambda (s)
++    ((star <sexpr>) s
++                    (lambda (m r)
++                      (map (lambda (e)
++                             (annotate-tc
++                              (pe->lex-pe
++                               (box-set
++                                (remove-applic-lambda-nil
++                                 (parse e))))))
++                           m))
++                    (lambda (f) 'fail))))
++ 
++(define file->list
++  (lambda (in-file)
++    (let ((in-port (open-input-file in-file)))
++      (letrec ((run
++                (lambda ()
++                  (let ((ch (read-char in-port)))
++                    (if (eof-object? ch)
++                        (begin
++                          (close-input-port in-port)
++                          '())
++                        (cons ch (run)))))))
++        (run)))))
++
++(define list->set
++  (lambda (l)
++    (fold-left
++     (lambda (acc curr)
++       (if (member curr acc)
++           acc
++           (append acc (list curr))))
++     '()
++     l)))
++
++(define get-consts
++  (lambda (l pe)
++    (let ((tag (car pe)))
++      (cond ((eq? tag 'const)
++             (append l (cdr pe)))
++            ((eq? tag 'if3)
++             (let ((test (cadr pe))
++                   (dit (caddr pe))
++                   (dif (cadddr pe)))
++               (append
++                (get-consts l test)
++                (get-consts l dit)
++                (get-consts l dif))))
++            ((or (eq? tag 'or) (eq? tag 'seq))
++             (apply append (map (lambda (el) (get-consts l el)) (cadr pe))))
++            ((or (eq? tag 'define) (eq? tag 'set) (eq? tag 'box-set))
++             (let ((var (cadr pe))
++                   (val (caddr pe)))
++               (get-consts l val)))
++            ((eq? tag 'lambda-simple)
++             (let ((params (cadr pe))
++                   (body (caddr pe)))
++               (get-consts l body)))
++            ((eq? tag 'lambda-opt)
++             (let ((params (cadr pe))
++                   (opt-param (caddr pe))
++                   (body (cadddr pe)))
++               (get-consts l body)))
++            ((or (eq? tag 'tc-applic) (eq? tag 'applic))
++             (let ((f (cadr pe))
++                   (args (caddr pe)))
++               (append
++                (get-consts l f)
++                (apply append (map (lambda (el) (get-consts l el)) args)))))
++            ((or (eq? tag 'box) (eq? tag 'box-get))
++             (get-consts l (cadr pe)))
++            (else l)))))
++
++(define get-fvars
++  (lambda (l pe)
++    (let ((tag (car pe)))
++      (cond ((eq? tag 'fvar)
++             (append l (cdr pe)))
++            ((eq? tag 'if3)
++             (let ((test (cadr pe))
++                   (dit (caddr pe))
++                   (dif (cadddr pe)))
++               (append
++                (get-fvars l test)
++                (get-fvars l dit)
++                (get-fvars l dif))))
++            ((or (eq? tag 'or) (eq? tag 'seq))
++             (apply append (map (lambda (el) (get-fvars l el)) (cadr pe))))
++            ((or (eq? tag 'define) (eq? tag 'set) (eq? tag 'box-set))
++             (let ((var (cadr pe))
++                   (val (caddr pe)))
++               (append
++                (get-fvars l var)
++                (get-fvars l val))))
++            ((eq? tag 'lambda-simple)
++             (let ((params (cadr pe))
++                   (body (caddr pe)))
++               (get-fvars l body)))
++            ((eq? tag 'lambda-opt)
++             (let ((params (cadr pe))
++                   (opt-param (caddr pe))
++                   (body (cadddr pe)))
++               (get-fvars l body)))
++            ((or (eq? tag 'applic) (eq? tag 'tc-applic))
++             (let ((f (cadr pe))
++                   (args (caddr pe)))
++               (append
++                (get-fvars l f)
++                (apply append (map (lambda (el) (get-fvars l el)) args)))))
++            ((or (eq? tag 'box) (eq? tag 'box-get))
++             (get-fvars l (cadr pe)))
++            (else l)))))
++
++(define constants-set
++  (lambda (pes)
++    (list->set (apply append (map (lambda (pe) (get-consts '() pe)) pes)))))
++
++(define fvars-set
++  (lambda (pes)
++    (list->set (apply append (map (lambda (pe) (get-fvars '() pe)) pes)))))
++
++(define data-gen-const-1
++  (lambda (entry)
++    (let ((value (table-entry->value entry))
++          (label (table-entry->label entry)))
++      (format "~a: resq 1\n" label))))
++
++(define data-gen-const-2
++  (lambda (entry)
++    (let ((value (table-entry->value entry))
++          (label (table-entry->label entry)))
++      (cond ((null? value)
++             (format "mov qword [~a], SOB_NIL\n" label))
++            ((eq? value (void))
++             (format "mov qword [~a], SOB_VOID\n" label))
++            ((eq? value #t)
++             (format "mov qword [~a], SOB_TRUE\n" label))
++            ((eq? value #f)
++             (format "mov qword [~a], SOB_FALSE\n" label))
++            ((integer? value)
++             (format "MAKE_LITERAL_2 ~a, T_INTEGER, ~a\n" label value))
++            ((rational? value)
++             (format "MAKE_LITERAL_FRACTION ~a, ~a, ~a\n" label (numerator value) (denominator value)))
++            ((char? value)
++             (format "MAKE_LITERAL_2 ~a, T_CHAR, ~a\n" label (char->integer value)))
++            ((string? value)
++             (string-append
++              (format "MY_MALLOC ~a\n" (string-length value))
++              "xor rcx, rcx\n"
++              (apply string-append
++                     (map (lambda (ch)
++                            (string-append
++                             (format "mov byte [rax + rcx], ~a\n" (char->integer ch))
++                             "inc rcx\n"))
++                          (string->list value)))
++              (format "MAKE_LITERAL_STRING ~a, rax, ~a\n" label (string-length value))))
++            ((symbol? value)
++             (string-append
++              (data-gen-const-2 (make-table-entry (symbol->string value) label))
++              (format "xor qword [~a], T_SYMBOL ^ T_STRING\n" label)))
++            ((pair? value)
++             (let ((car-label (table-find-label consts-table (car value)))
++                   (cdr-label (table-find-label consts-table (cdr value))))
++               (format "MAKE_LITERAL_PAIR ~a, ~a, ~a\n" label car-label cdr-label)))
++            ((vector? value)
++             (string-append
++              (format "MY_MALLOC ~a * 8\n" (vector-length value))
++              "xor rcx, rcx\n"
++              (apply string-append
++                     (map (lambda (el)
++                            (string-append
++                             (format "mov qword [rax + 8 * rcx], ~a\n" (table-find-label consts-table el))
++                             "inc rcx\n"))
++                          (vector->list value)))
++              (format "MAKE_LITERAL_VECTOR ~a, rax, ~a\n" label (vector-length value))))
++            (else "")))))
++
++(define data-gen-global-1
++  (lambda (entry)
++    (let ((var (table-entry->value entry))
++          (label (table-entry->label entry)))
++      (format "~a: resq 2\t; ~s\n" label var))))
++
++(define data-gen-global-2
++  (lambda (entry)
++    (let ((var (table-entry->value entry))
++          (label (table-entry->label entry)))
++      (format "mov qword [~a], SOB_UNDEFINED\n" label))))
++
++(define table-entry->value car)
++
++(define table-entry->label cdr)
++
++(define make-table-entry cons)
++
++(define table-find-label
++  (lambda (table value)
++    (let ((entry (find (lambda (entry)
++                         (equal? value (table-entry->value entry)))
++                       table)))
++      (if entry
++          (table-entry->label entry)
++          ""))))
++
++(define add-entry-if-not-exists!
++  (lambda (table value label)
++    (if (equal? (table-find-label table value) "")
++        (append! table (list (make-table-entry value label)))
++        table)))
++
++(define add-const-if-not-exists!
++  (lambda (value)
++    (add-entry-if-not-exists! consts-table value (new-const-label))))
++
++(define add-global-if-not-exists!
++  (lambda (var)
++    (add-entry-if-not-exists! globals-table var (new-global-label))))
++
++(define consts-table
++  (list
++   (make-table-entry '() "SobNil")
++   (make-table-entry (void) "SobVoid")
++   (make-table-entry #t "SobTrue")
++   (make-table-entry #f "SobFalse")
++   (make-table-entry 0 "SobZero")))
++
++(define const-label-num 0)
++
++(define new-const-label
++  (lambda ()
++    (set! const-label-num (+ const-label-num 1))
++    (format "Lconst~a" const-label-num)))
++
++(define globals-table
++  (list
++   (make-table-entry 'car "ProcCar")
++   (make-table-entry 'cdr "ProcCdr")
++   (make-table-entry 'cons "ProcCons")
++   (make-table-entry 'eq? "ProcEq")
++   (make-table-entry '= "ProcEquals")
++   (make-table-entry '< "ProcLessThan")
++   (make-table-entry '> "ProcGreaterThan")
++   (make-table-entry '+ "ProcAdd")
++   (make-table-entry '* "ProcMul")
++   (make-table-entry '/ "ProcDiv")
++   (make-table-entry 'boolean? "ProcBoolean")
++   (make-table-entry 'char? "ProcChar")
++   (make-table-entry 'procedure? "ProcProcedure")
++   (make-table-entry 'integer? "ProcInteger")
++   (make-table-entry 'rational? "ProcRational")
++   (make-table-entry 'pair? "ProcPair")
++   (make-table-entry 'string? "ProcString")
++   (make-table-entry 'symbol? "ProcSymbol")
++   (make-table-entry 'vector? "ProcVectorQ")
++   (make-table-entry 'integer->char "ProcIntegerToChar")
++   (make-table-entry 'char->integer "ProcCharToInteger")
++   (make-table-entry 'remainder "ProcRemainder")
++   (make-table-entry 'numerator "ProcNumerator")
++   (make-table-entry 'denominator "ProcDenominator")
++   (make-table-entry 'not "ProcNot")
++   (make-table-entry 'string-length "ProcStringLength")
++   (make-table-entry 'string-ref "ProcStringRef")
++   (make-table-entry 'string-set! "ProcStringSet")
++   (make-table-entry 'make-string "ProcMakeString")
++   (make-table-entry 'vector "ProcVector")
++   (make-table-entry 'vector-length "ProcVectorLength")
++   (make-table-entry 'vector-ref "ProcVectorRef")
++   (make-table-entry 'vector-set! "ProcVectorSet")
++   (make-table-entry 'make-vector "ProcMakeVector")
++   (make-table-entry 'apply "ProcApply")
++   (make-table-entry 'symbol->string "ProcSymbolToString")
++   (make-table-entry 'string->symbol "ProcStringToSymbol")))
++
++(define globals-label-num 0)
++
++(define new-global-label
++  (lambda ()
++    (set! globals-label-num (+ globals-label-num 1))
++    (format "Lglobal~a" globals-label-num)))
++
++(define add-const-entry
++  (lambda (value)
++    (cond ((pair? value)
++           (add-const-entry (car value))
++           (add-const-entry (cdr value)))
++          ((vector? value)
++           (for-each add-const-entry (vector->list value))))
++    (add-const-if-not-exists! value)))
++
++(define build-consts-table
++  (lambda (consts)
++    (for-each add-const-entry consts)))
++
++(define build-globals-table
++  (lambda (globals)
++    (for-each add-global-if-not-exists! globals)))
++
++(define if3-label-index 0)
++
++(define or-label-index 0)
++
++(define lambda-label-index 0)
++
++(define applic-label-index 0)
++
++(define code-gen-const
++  (lambda (pe)
++    (format "lea rax, [~a]\n" (table-find-label consts-table (cadr pe)))))
++
++(define code-gen-fvar
++  (lambda (pe)
++    (format "lea rax, [~a]\n" (table-find-label globals-table (cadr pe)))))
++
++(define code-gen-pvar
++  (lambda (pe)
++    (let ((minor (caddr pe)))
++      (format "mov rax, An(~a)\n" minor))))
++
++(define code-gen-bvar
++  (lambda (pe)
++    (let ((major (caddr pe))
++          (minor (cadddr pe)))
++      (string-append
++       "mov rax, env\n"
++       (format "mov rax, [rax + 8 * ~a]\n" major)
++       (format "mov rax, [rax + 8 * ~a]\n" minor)))))
++
++(define code-gen-if3
++  (lambda (pe)
++    (set! if3-label-index (+ if3-label-index 1))
++    (let ((test (cadr pe))
++          (dit (caddr pe))
++          (dif (cadddr pe))
++          (if3-label-index if3-label-index))
++      (string-append
++       (code-gen test)
++       "cmp rax, qword SobFalse\n"
++       (format "je if3_false_~a\n" if3-label-index)
++       (code-gen dit)
++       (format "jmp if3_end_~a\n" if3-label-index)
++       (format "if3_false_~a:\n" if3-label-index)
++       (code-gen dif)
++       (format "if3_end_~a:\nnop\n" if3-label-index)))))
++
++(define code-gen-or
++  (lambda (pe)
++    (set! or-label-index (+ or-label-index 1))
++    (let ((or-pes (cadr pe))
++          (or-label-index or-label-index))
++      (string-append
++       (fold-left (lambda (acc curr)
++                    (string-append
++                     acc
++                     "cmp rax, qword SobFalse\n"
++                     (format "jne or_end_~a\n" or-label-index)
++                     (code-gen curr)))
++                  (code-gen (car or-pes))
++                  (cdr or-pes))
++       (format "or_end_~a:\nnop\n" or-label-index)))))
++
++(define code-gen-define
++  (lambda (pe)
++    (let ((var (cadr (cadr pe)))
++          (val (caddr pe)))
++      (string-append
++       (code-gen val)
++       "mov rax, [rax]\n"
++       (format "mov [~a], rax\n" (table-find-label globals-table var))
++       "lea rax, [SobVoid]\n"))))
++
++(define code-gen-set
++  (lambda (pe)
++    (let* ((var (cadr pe))
++           (var-tag (car var))
++           (var-sym (cadr var))
++           (val (caddr pe)))
++      (string-append
++       (code-gen val)
++       (cond ((eq? var-tag 'fvar)
++              (string-append
++               "mov rax, [rax]\n"
++               (format "mov [~a], rax\n" (table-find-label globals-table var-sym))))
++             ((eq? var-tag 'pvar)
++              (let ((minor (caddr var)))
++                (format "mov An(~a), rax\n" minor)))
++             ((eq? var-tag 'bvar)
++              (let ((major (caddr var))
++                    (minor (cadddr var)))
++                (string-append
++                 "mov rbx, env\n"
++                 (format "mov rbx, [rbx + 8 * ~a]\n" major)
++                 (format "mov [rbx + 8 * ~a], rax\n" minor)))))
++       "lea rax, [SobVoid]\n"))))
++
++(define code-gen-seq
++  (lambda (pe)
++    (if (null? (cadr pe))
++        "lea rax, [SobVoid]\n"
++        (apply string-append (map code-gen (cadr pe))))))
++
++(define lambda-depth 0)
++
++(define code-gen-lambda-prologue
++  (lambda (lambda-label-index lambda-depth)
++    (string-append
++     "MY_MALLOC 8 * 2\n"
++     "push rax\n"
++     (format "MY_MALLOC 8 * ~a\n" lambda-depth)
++     "push rax\n"
++     "mov rcx, arg_count\n"
++     "shl rcx, 3\n"
++     "MY_MALLOC rcx\n"
++     "mov rdx, rax\n"
++     "pop rbx\n"
++     "pop rax\n"
++     "mov rcx, arg_count\n"
++     "cmp rcx, 0\n"
++     (format "je empty_env_~a\n" lambda-label-index)
++     (format "new_env_loop_~a:\n" lambda-label-index)
++     "mov rdi, An(rcx - 1)\n"
++     "mov [rdx + 8 * (rcx - 1)], rdi\n"
++     (format "loop new_env_loop_~a\n" lambda-label-index)
++     (format "jmp new_env_loop_end_~a\n" lambda-label-index)
++     (format "empty_env_~a:\n" lambda-label-index)
++     "xor rdx, rdx\n"
++     (format "new_env_loop_end_~a:\n" lambda-label-index)
++     "mov [rbx], rdx\n"
++     (format "mov rcx, (~a - 1)\n" lambda-depth)
++     "cmp rcx, 0\n"
++     (format "je extend_env_loop_end_~a\n" lambda-label-index)
++     "mov rdx, env\n"
++     (format "extend_env_loop_~a:\n" lambda-label-index)
++     "mov rdi, [rdx + 8 * (rcx - 1)]\n"
++     "mov [rbx + 8 * rcx], rdi\n"
++     (format "loop extend_env_loop_~a\n" lambda-label-index)
++     (format "extend_env_loop_end_~a:\n" lambda-label-index)
++     (format "MAKE_LITERAL_CLOSURE rax, rbx, lambda_code_~a\n" lambda-label-index)
++     (format "jmp lambda_end_~a\n" lambda-label-index)
++     (format "lambda_code_~a:\n" lambda-label-index)
++     "push rbp\n"
++     "mov rbp, rsp\n")))
++
++(define code-gen-lambda-epilogue
++  (lambda (lambda-label-index lambda-depth)
++    (string-append
++     "leave\n"
++     "ret\n"
++     (format "lambda_end_~a:\n" lambda-label-index))))
++
++(define code-gen-lambda-simple
++  (lambda (pe)
++    (set! lambda-label-index (+ lambda-label-index 1))
++    (set! lambda-depth (+ lambda-depth 1))
++    (let ((params (cadr pe))
++          (body (caddr pe))
++          (lambda-label-index lambda-label-index))
++      (let ((gen (string-append
++                  (code-gen-lambda-prologue lambda-label-index lambda-depth)
++                  (format "cmp arg_count, ~a\n" (length params))
++                  (format "jne lambda_end_~a\n" lambda-label-index)
++                  (code-gen body)
++                  (code-gen-lambda-epilogue lambda-label-index lambda-depth))))
++        (set! lambda-depth (- lambda-depth 1))
++        gen))))
++       
++(define code-gen-lambda-opt
++  (lambda (pe)
++    (set! lambda-label-index (+ lambda-label-index 1))
++    (set! lambda-depth (+ lambda-depth 1))
++    (let ((params (cadr pe))
++          (opt-param (caddr pe))
++          (body (cadddr pe))
++          (lambda-label-index lambda-label-index))
++      (let ((gen (string-append
++                  (code-gen-lambda-prologue lambda-label-index lambda-depth)
++                  (format "cmp arg_count, ~a\n" (length params))
++                  (format "jl lambda_end_~a\n" lambda-label-index)
++                  (format "cmp arg_count, ~a\n" (length params))
++                  (format "jne has_opt_~a\n" lambda-label-index)
++                  "sub rbp, 8\n"
++                  "mov rdx, rbp\n"
++                  (format "mov rcx, (~a + 4)\n" (length params))
++                  (format "shift_up_loop_~a:\n" lambda-label-index)
++                  "mov rax, [rdx + 8]\n"
++                  "mov [rdx], rax\n"
++                  "add rdx, 8\n"
++                  (format "loop shift_up_loop_~a\n" lambda-label-index)
++                  "mov qword [rdx], SobNil\n"
++                  (format "jmp opt_end_~a\n" lambda-label-index)
++                  (format "has_opt_~a:\n" lambda-label-index)
++                  "mov rcx, arg_count\n"
++                  (format "sub rcx, ~a\n" (length params))
++                  "mov rsi, arg_count\n"
++                  "add rsi, 3\n"
++                  "shl rsi, 3\n"
++                  "push qword SobNil\n"
++                  (format "opt_list_loop_~a:\n" lambda-label-index)
++                  "push rcx\n"
++                  "push rsi\n"
++                  "MY_MALLOC 8\n"
++                  "pop rsi\n"
++                  "pop rcx\n"
++                  "pop rdx\n"
++                  "push rsi\n"
++                  "mov rsi, [rbp + rsi]\n"
++                  "MAKE_DYNAMIC_PAIR rax, rsi, rdx\n"
++                  "pop rsi\n"
++                  "sub rsi, 8\n"
++                  "push rax\n"
++                  (format "loop opt_list_loop_~a\n" lambda-label-index)
++                  "pop rax\n"
++                  "mov rcx, arg_count\n"
++                  "mov An(rcx - 1), rax\n"
++                  "mov rdi, rcx\n"
++                  "add rdi, 2\n"
++                  "shl rdi, 3\n"
++                  (format "mov rsi, (~a + 3)\n" (length params))
++                  "shl rsi, 3\n"
++                  (format "mov rcx, (~a + 4)\n" (length params))
++                  "mov rbx, arg_count\n"
++                  (format "shift_down_loop_~a:\n" lambda-label-index)
++                  "mov rax, [rbp + rsi]\n"
++                  "mov [rbp + rdi], rax\n"
++                  "sub rsi, 8\n"
++                  "sub rdi, 8\n"
++                  (format "loop shift_down_loop_~a\n" lambda-label-index)  
++                  (format "sub rbx, (~a + 1)\n" (length params))
++                  "shl rbx, 3\n"
++                  "add rbp, rbx\n"
++                  (format "opt_end_~a:\n" lambda-label-index)
++                  (format "mov arg_count, (~a + 1)\n" (length params))
++                  "mov rsp, rbp\n"
++                  (code-gen body)
++                  (code-gen-lambda-epilogue lambda-label-index lambda-depth))))
++        (set! lambda-depth (- lambda-depth 1))
++        gen))))
++
++(define code-gen-applic-prologue
++  (lambda (proc args applic-label-index)
++    (string-append
++     (apply string-append
++            (map (lambda (arg)
++                   (string-append
++                    (code-gen arg)
++                    "push rax\n"))
++                 (reverse args)))
++     (format "push ~a\n" (length args))
++     (code-gen proc)
++     "mov rax, [rax]\n"
++     "mov rbx, rax\n"
++     "TYPE rbx\n"
++     "cmp rbx, T_CLOSURE\n"
++     (format "je applic_cont_~a\n" applic-label-index)
++     "xor rax, rax\n"
++     "mov rdi, 1\n"
++     "call exit\n"
++     (format "applic_cont_~a:\n" applic-label-index)
++     "mov rbx, rax\n"
++     "CLOSURE_ENV rbx\n"
++     "push rbx\n")))
++
++(define code-gen-applic
++  (lambda (pe)
++    (set! applic-label-index (+ applic-label-index 1))
++    (let ((proc (cadr pe))
++          (args (caddr pe))
++          (applic-label-index applic-label-index))
++      (string-append
++       (code-gen-applic-prologue proc args applic-label-index)
++       "CLOSURE_CODE rax\n"
++       "call rax\n"
++       "mov rbx, post_applic_arg_count\n"
++       "add rbx, 2\n"
++       "sal rbx, 3\n"
++       "add rsp, rbx\n"))))
++
++(define code-gen-tc-applic
++  (lambda (pe)
++    (set! applic-label-index (+ applic-label-index 1))
++    (let ((proc (cadr pe))
++          (args (caddr pe))
++          (applic-label-index applic-label-index))
++      (string-append
++       (code-gen-applic-prologue proc args applic-label-index)
++       "mov rdx, arg_count\n"
++       "push ret_addr\n"
++       "push rax\n"
++       "mov rbx, rbp\n"
++       "mov rbp, old_rbp\n"
++       (format "mov rcx, ~a + 3\n" (length args))
++       "mov rsi, rcx\n"
++       "sal rsi, 3\n"
++       "mov rdi, rdx\n"
++       "add rdi, 3\n"
++       "sal rdi, 3\n"
++       (format "loop_tc_frame_~a:\n" applic-label-index)
++       "mov rax, [rsp + rsi]\n"
++       "mov [rbx + rdi], rax\n"
++       "sub rsi, 8\n"
++       "sub rdi, 8\n"
++       (format "loop loop_tc_frame_~a\n" applic-label-index)
++       "pop rax\n"
++       "CLOSURE_CODE rax\n"
++       "lea rsp, [rbx + rdi + 8]\n"
++       "jmp rax\n"))))
++
++(define code-gen-box
++  (lambda (pe)
++    (string-append
++     (code-gen (cadr pe))
++     "MAKE_POINTER rax\n")))
++
++(define code-gen-box-get
++  (lambda (pe)
++    (string-append
++     (code-gen (cadr pe))
++     "mov rax, [rax]\n")))
++
++(define code-gen-box-set
++  (lambda (pe)
++    (let ((var (cadr pe))
++          (val (caddr pe)))
++      (string-append
++       (code-gen val)
++       "mov rbx, rax\n"
++       (code-gen var)
++       "mov [rax], rbx\n"
++       "lea rax, [SobVoid]\n"))))
++
++(define code-gen
++  (lambda (pe)
++    (let* ((tag (car pe))
++           (code-gen-fun
++            (cond
++              ((eq? tag 'const) code-gen-const)
++              ((eq? tag 'fvar) code-gen-fvar)
++              ((eq? tag 'pvar) code-gen-pvar)
++              ((eq? tag 'bvar) code-gen-bvar)
++              ((eq? tag 'if3) code-gen-if3)
++              ((eq? tag 'or) code-gen-or)
++              ((eq? tag 'define) code-gen-define)
++              ((eq? tag 'set) code-gen-set)
++              ((eq? tag 'seq) code-gen-seq)
++              ((eq? tag 'lambda-simple) code-gen-lambda-simple)
++              ((eq? tag 'lambda-opt) code-gen-lambda-opt)
++              ((eq? tag 'applic) code-gen-applic)
++              ((eq? tag 'tc-applic) code-gen-tc-applic)
++              ((eq? tag 'box) code-gen-box)
++              ((eq? tag 'box-get) code-gen-box-get)
++              ((eq? tag 'box-set) code-gen-box-set)
++              (else (lambda (_) "")))))
++      (code-gen-fun pe))))
++
++(define asm-prologue
++  (lambda (code)
++    (append
++     (list
++      "%include './project/scheme.s'"
++      ""
++      "section .bss"
++      "malloc_pointer:"
++      "resq 1"
++      "start_of_data:"
++      (apply string-append (map data-gen-const-1 consts-table))
++      (apply string-append (map data-gen-global-1 globals-table))
++      "start_of_free_data:"
++      "resb gigabyte(1)"
++      ""
++      "section .text"
++      "main:"
++      "push 0"
++      "push 0"
++      "push 0"
++      "push rbp"
++      "mov rbp, rsp"
++      ""
++      "mov rax, malloc_pointer"
++      "mov qword [rax], start_of_free_data"
++      ""
++      (apply string-append (map data-gen-const-2 consts-table))
++      (apply string-append (map data-gen-global-2 globals-table))
++      ""
++      "MAKE_INITIAL_CLOSURE ProcCar, prim_car"
++      "MAKE_INITIAL_CLOSURE ProcCdr, prim_cdr"
++      "MAKE_INITIAL_CLOSURE ProcCons, prim_cons"
++      "MAKE_INITIAL_CLOSURE ProcEq, prim_eq"
++      "MAKE_INITIAL_CLOSURE ProcEquals, prim_equals"
++      "MAKE_INITIAL_CLOSURE ProcAdd, prim_add"
++      "MAKE_INITIAL_CLOSURE ProcMul, prim_mul"
++      "MAKE_INITIAL_CLOSURE ProcDiv, prim_div"
++      "MAKE_INITIAL_CLOSURE ProcBoolean, prim_boolean"
++      "MAKE_INITIAL_CLOSURE ProcChar, prim_char"
++      "MAKE_INITIAL_CLOSURE ProcProcedure, prim_procedure"
++      "MAKE_INITIAL_CLOSURE ProcInteger, prim_integer"
++      "MAKE_INITIAL_CLOSURE ProcRational, prim_rational"
++      "MAKE_INITIAL_CLOSURE ProcPair, prim_pair"
++      "MAKE_INITIAL_CLOSURE ProcString, prim_string"
++      "MAKE_INITIAL_CLOSURE ProcSymbol, prim_symbol"
++      "MAKE_INITIAL_CLOSURE ProcVectorQ, prim_vector_q"
++      "MAKE_INITIAL_CLOSURE ProcIntegerToChar, prim_integer_to_char"
++      "MAKE_INITIAL_CLOSURE ProcCharToInteger, prim_char_to_integer"
++      "MAKE_INITIAL_CLOSURE ProcRemainder, prim_remainder"
++      "MAKE_INITIAL_CLOSURE ProcNumerator, prim_numerator"
++      "MAKE_INITIAL_CLOSURE ProcDenominator, prim_denominator"
++      "MAKE_INITIAL_CLOSURE ProcNot, prim_not"
++      "MAKE_INITIAL_CLOSURE ProcStringLength, prim_string_length"
++      "MAKE_INITIAL_CLOSURE ProcStringRef, prim_string_ref"
++      "MAKE_INITIAL_CLOSURE ProcStringSet, prim_string_set"
++      "MAKE_INITIAL_CLOSURE ProcMakeString, prim_make_string"
++      "MAKE_INITIAL_CLOSURE ProcVector, prim_vector"
++      "MAKE_INITIAL_CLOSURE ProcVectorLength, prim_vector_length"
++      "MAKE_INITIAL_CLOSURE ProcVectorRef, prim_vector_ref"
++      "MAKE_INITIAL_CLOSURE ProcVectorSet, prim_vector_set"
++      "MAKE_INITIAL_CLOSURE ProcMakeVector, prim_make_vector"
++      "MAKE_INITIAL_CLOSURE ProcApply, prim_apply"
++      "MAKE_INITIAL_CLOSURE ProcSymbolToString, prim_symbol_to_string"
++      "MAKE_INITIAL_CLOSURE ProcStringToSymbol, prim_string_to_symbol"
++      "MAKE_INITIAL_CLOSURE ProcLessThan, prim_less_than"
++      "MAKE_INITIAL_CLOSURE ProcGreaterThan, prim_greater_than"
++      "")
++     code)))
++
++(define asm-epilogue
++  (lambda (code)
++    (append
++     code
++     (list
++      "xor rdi, rdi"
++      "call exit"))))
++
++(define compile
++  (lambda (pes)
++    (let ((constants (constants-set pes))
++          (fvars (fvars-set pes)))
++      (build-consts-table constants)
++      (build-globals-table fvars))
++    (let ((code
++           (map (lambda (pe)
++                  (string-append
++                   (code-gen pe)
++                   "push rax\n"
++                   "call write_sob_if_not_void\n"
++                   "add rsp, 1*8\n"))
++                pes)))
++      (asm-epilogue (asm-prologue code)))))
++
++(define compile-scheme-file
++  (lambda (in-file out-file)
++    (let* ((input (append (file->list "./project/builtins.scm") (file->list in-file)))
++           (code (compile (pipeline input)))
++           (out-port (open-output-file out-file 'replace)))
++      (for-each (lambda (line) (fprintf out-port "~a\n" line))
++                code)
++      (close-output-port out-port))))
+diff --git a/readme.txt b/readme.txt
+index e69de29..5401fac 100644
+--- a/readme.txt
++++ b/readme.txt
+@@ -0,0 +1,4 @@
++Ron Madlal 204006746
++Uzi Friedman 204030746
++
++We assert that the work we submitted is 100% our own. We have not received any part from any other student in the class, nor have we give parts of it for use to others. Nor have we used code from other sources: Courses taught previously at this university, courses taught at other universities, various bits of code found on the internet, etc. We realize that should our code be found to contain code from other sources, a formal case shall be opened against us with ועדת משמעת, in pursuit of disciplinary action.
+\ No newline at end of file
+diff --git a/scheme.s b/scheme.s
+new file mode 100644
+index 0000000..b1daa44
+--- /dev/null
++++ b/scheme.s
+@@ -0,0 +1,2100 @@
++%define T_UNDEFINED 0
++%define T_VOID 1
++%define T_NIL 2
++%define T_INTEGER 3
++%define T_FRACTION 4
++%define T_BOOL 5
++%define T_CHAR 6
++%define T_STRING 7
++%define T_SYMBOL 8
++%define T_CLOSURE 9
++%define T_PAIR 10
++%define T_VECTOR 11
++
++%define CHAR_NUL 0
++%define CHAR_TAB 9
++%define CHAR_NEWLINE 10
++%define CHAR_PAGE 12
++%define CHAR_RETURN 13
++%define CHAR_SPACE 32
++
++%define TYPE_BITS 4
++%define WORD_SIZE 64
++
++%define MAKE_LITERAL(type, lit) ((lit << TYPE_BITS) | type)
++
++%define gigabyte(n) ((1 << 30) * n)
++
++%macro MAKE_LITERAL_2 3
++  mov rax, %3
++  shl rax, TYPE_BITS
++  or rax, %2
++  mov qword [%1], rax
++%endmacro
++
++;;; MAKE_LITERAL_FROM_REG type, [register]
++%macro MAKE_LITERAL_FROM_REG 2
++  shl %2, TYPE_BITS
++  or %2, %1
++%endmacro
++
++%macro TYPE 1
++  and %1, ((1 << TYPE_BITS) - 1) 
++%endmacro
++
++%macro DATA 1
++  sar %1, TYPE_BITS
++%endmacro
++
++%macro DATA_UPPER 1
++  shr %1, (((WORD_SIZE - TYPE_BITS) >> 1) + TYPE_BITS)
++%endmacro
++
++%macro DATA_LOWER 1
++  shl %1, ((WORD_SIZE - TYPE_BITS) >> 1)
++  DATA_UPPER %1
++%endmacro
++
++%macro DATA_UPPER_FRACTION 1
++  sar %1, (((WORD_SIZE - TYPE_BITS) >> 1) + TYPE_BITS)
++%endmacro
++
++%macro DATA_LOWER_FRACTION 1
++  shl %1, ((WORD_SIZE - TYPE_BITS) >> 1)
++  DATA_UPPER_FRACTION %1
++%endmacro
++
++%macro MAKE_LITERAL_PAIR 3
++  mov rax, %2
++  sub rax, start_of_data
++  shl rax, ((WORD_SIZE - TYPE_BITS) >> 1)
++  mov rbx, %3
++  sub rbx, start_of_data
++  or rax, rbx
++  shl rax, TYPE_BITS
++  or rax, T_PAIR
++  mov qword [%1], rax
++%endmacro
++
++%macro MAKE_LITERAL_FRACTION 3
++  mov rax, %2
++  shl rax, (WORD_SIZE - TYPE_BITS) >> 1
++  or rax, %3
++  shl rax, TYPE_BITS
++  or rax, T_FRACTION
++  mov qword [%1], rax
++%endmacro
++
++%macro MAKE_LITERAL_FRACTION_2 2
++  mov rax, %1
++  shl rax, (WORD_SIZE - TYPE_BITS) >> 1
++  or rax, %2
++  shl rax, TYPE_BITS
++  or rax, T_FRACTION
++%endmacro
++
++%macro CAR 1
++  DATA_UPPER %1
++  add %1, start_of_data
++%endmacro
++
++%macro CDR 1
++  DATA_LOWER %1
++  add %1, start_of_data
++%endmacro
++
++;;; MAKE_LITERAL_CLOSURE target, env, code
++%macro MAKE_LITERAL_CLOSURE 3
++  push rax
++  push rbx
++  mov rax, %1
++  mov rbx, %2
++  sub rbx, start_of_data
++  mov qword [rax], rbx
++  shl qword [rax], ((WORD_SIZE - TYPE_BITS) >> 1)
++  lea rbx, [rax + 8]
++  sub rbx, start_of_data
++  or qword [rax], rbx
++  shl qword [rax], TYPE_BITS
++  or qword [rax], T_CLOSURE
++  mov qword [rax + 8], %3
++  pop rbx
++  pop rax
++%endmacro
++
++;;; MAKE_INITIAL_CLOSURE target, code
++%macro MAKE_INITIAL_CLOSURE 2
++  MAKE_LITERAL_CLOSURE %1, 0, %2
++%endmacro
++
++%macro CLOSURE_ENV 1
++  DATA_UPPER %1
++  add %1, start_of_data
++%endmacro
++
++%macro CLOSURE_CODE 1
++  DATA_LOWER %1
++  add %1, start_of_data
++  mov %1, qword [%1]
++%endmacro
++
++;;; MAKE_LITERAL_STRING target, string_ptr, string_length
++%macro MAKE_LITERAL_STRING 3
++  mov rbx, rax
++  sub rbx, start_of_data
++  mov rax, (%3 << ((WORD_SIZE - TYPE_BITS) >> 1))
++  or rax, rbx
++  shl rax, TYPE_BITS
++  or rax, T_STRING
++  mov qword [%1], rax
++%endmacro
++
++%macro MAKE_EMPTY_STRING 1
++  mov qword [%1], ((((%%Lstr - start_of_data)) << TYPE_BITS) | T_STRING)
++  %%Lstr:
++  db 0
++  %%LstrEnd:
++%endmacro
++
++%macro STRING_LENGTH 1
++  DATA_UPPER %1
++%endmacro
++
++%macro STRING_ELEMENTS 1
++  DATA_LOWER %1
++  add %1, start_of_data
++%endmacro
++
++;;; MAKE_LITERAL_VECTOR target, vector_ptr, vector_length
++%macro MAKE_LITERAL_VECTOR 3
++  mov rbx, rax
++  sub rbx, start_of_data
++  mov rax, (%3 << ((WORD_SIZE - TYPE_BITS) >> 1))
++  or rax, rbx
++  shl rax, TYPE_BITS
++  or rax, T_VECTOR
++  mov qword [%1], rax
++%endmacro
++
++%macro VECTOR_LENGTH 1
++  DATA_UPPER %1
++%endmacro
++
++%macro VECTOR_ELEMENTS 1
++  DATA_LOWER %1
++  add %1, start_of_data
++%endmacro
++
++%define SOB_UNDEFINED MAKE_LITERAL(T_UNDEFINED, 0)
++%define SOB_VOID MAKE_LITERAL(T_VOID, 0)
++%define SOB_FALSE MAKE_LITERAL(T_BOOL, 0)
++%define SOB_TRUE MAKE_LITERAL(T_BOOL, 1)
++%define SOB_NIL MAKE_LITERAL(T_NIL, 0)
++
++;;; MAKE_DYNAMIC_PAIR target-addrees, car-addrees, cdr-addrees
++%macro MAKE_DYNAMIC_PAIR 3
++    push rax
++    push rbx
++    mov rax, %1
++    mov qword [rax], %2
++    sub qword [rax], start_of_data
++    shl qword [rax], ((WORD_SIZE - TYPE_BITS) >> 1)
++    mov rbx, %3
++    sub rbx, start_of_data
++    or qword [rax], rbx
++    shl qword [rax], TYPE_BITS
++    or qword [rax], T_PAIR
++    pop rbx
++    pop rax
++%endmacro
++
++;;; Simple frame access
++
++%define param(offset) qword [rbp + offset]
++
++struc scmframe
++.old_rbp: resq 1
++.ret_addr: resq 1
++.env: resq 1
++.arg_count: resq 1
++.A0: resq 1
++.A1: resq 1
++.A2: resq 1
++.A3: resq 1
++.A4: resq 1
++.A5: resq 1
++endstruc
++
++%define old_rbp param(scmframe.old_rbp)
++%define ret_addr param(scmframe.ret_addr)
++%define env param(scmframe.env)
++%define arg_count param(scmframe.arg_count)
++%define A0 param(scmframe.A0)
++%define A1 param(scmframe.A1)
++%define A2 param(scmframe.A2)
++%define A3 param(scmframe.A3)
++%define A4 param(scmframe.A4)
++%define A5 param(scmframe.A5)
++%define An(n) qword [rbp + 8 * (n + 4)]
++
++;; Right after an applic, the stack is: [ env | arg_count | arg0 | ... | argN | ... ]
++%define post_applic_arg_count qword [rsp + 8 * 1]
++
++%macro MY_MALLOC 1
++  push rbx
++  mov rbx, malloc_pointer
++  mov rax, qword [rbx]
++  add qword [rbx], %1
++  pop rbx
++%endmacro
++
++;; Uses rax and rbx
++%macro MAKE_POINTER 1
++  push %1
++  MY_MALLOC 1 * 8
++  pop rbx
++  mov [rax], rbx
++%endmacro
++
++%macro PRIM_TYPE_PRED 1
++  cmp arg_count, 1
++  jne %%false
++  mov rax, A0
++  mov rax, [rax]
++  TYPE rax
++  cmp rax, %1
++  jne %%false
++  lea rax, [SobTrue]
++  jmp %%end
++
++%%false:
++  lea rax, [SobFalse]
++%%end:
++  nop
++%endmacro
++
++%macro PAIR_LENGTH 1
++  mov rax, %1
++  mov rbx, [rax]
++  TYPE rbx
++  cmp rbx, T_NIL
++  je %%nil
++  xor rcx, rcx
++%%loop:
++  mov rax, [rax]
++  mov rbx, rax
++  CAR rbx
++  cmp rbx, qword SobNil
++  je %%end
++  inc rcx
++  CDR rax
++  jmp %%loop
++  jmp %%end
++
++%%nil:
++  xor rcx, rcx
++%%end:
++  mov rax, rcx
++%endmacro
++
++%macro NUMBER_TO_NUM_DEN 3
++  mov %2, %1
++  TYPE %2
++  cmp %2, T_FRACTION
++  je %%fraction
++  mov %2, %1
++  DATA %2
++  mov %3, 1
++  jmp %%end
++%%fraction:
++  mov %2, %1
++  DATA_UPPER_FRACTION %2
++  mov %3, %1
++  DATA_LOWER_FRACTION %3
++%%end:
++  nop
++%endmacro
++
++extern exit, printf, scanf, c_gcd, c_divide, c_remainder, c_add_numerator, c_multiply
++global main, write_sob, write_sob_if_not_void
++
++section .text
++prim_car:
++  push rbp
++  mov rbp, rsp
++
++  cmp arg_count, 1
++  jne .error
++  mov rax, A0
++  mov rax, [rax]
++  mov rbx, rax
++  TYPE rbx
++  cmp rbx, T_PAIR
++  jne .error
++
++  CAR rax
++  jmp .end
++
++.error:
++  lea rax, [SobVoid]
++.end:
++  leave
++  ret
++
++prim_cdr:
++  push rbp
++  mov rbp, rsp
++
++  cmp arg_count, 1
++  jne .error
++  mov rax, A0
++  mov rax, [rax]
++  mov rbx, rax
++  TYPE rbx
++  cmp rbx, T_PAIR
++  jne .error
++
++  CDR rax
++  jmp .end
++
++.error:
++  lea rax, [SobVoid]
++.end:
++  leave
++  ret
++
++prim_cons:
++  push rbp
++  mov rbp, rsp
++
++  cmp arg_count, 2
++  jne .error
++
++  MY_MALLOC 1 * 8
++  mov rbx, A0
++  mov rcx, A1
++  MAKE_DYNAMIC_PAIR rax, rbx, rcx
++  jmp .end
++
++.error:
++  lea rax, [SobVoid]
++.end:
++  leave
++  ret
++
++prim_equals:
++  push rbp
++  mov rbp, rsp
++
++  lea rax, [SobTrue]
++  cmp arg_count, 1
++  jl .false
++  mov rsi, A0
++  mov rsi, [rsi]
++  mov rbx, rsi
++  TYPE rbx
++  cmp rbx, T_INTEGER
++  je .first_cont
++  cmp rbx, T_FRACTION
++  jne .false
++
++.first_cont:
++  DATA rsi
++  mov rcx, arg_count
++  sub rcx, 1
++  cmp rcx, 0
++  je .end
++
++.loop:
++  mov rdi, An(rcx)
++  mov rdi, [rdi]
++  mov rbx, rdi
++  TYPE rbx
++  cmp rbx, T_INTEGER
++  je .k_cont
++  cmp rbx, T_FRACTION
++  jne .false
++.k_cont:
++  DATA rdi
++  cmp rsi, rdi
++  jne .false
++  loop .loop
++
++  lea rax, [SobTrue]
++  jmp .end
++
++.false:
++  lea rax, [SobFalse]
++.end:
++  leave
++  ret
++
++section .data
++.int_fmt: db "%ld", 10, 0
++  
++prim_less_than:
++  push rbp
++  mov rbp, rsp
++
++  mov rcx, arg_count
++  cmp rcx, 0
++  je .false
++  cmp rcx, 1
++  je .true
++  mov rbx, A0
++  mov rbx, [rbx]
++  NUMBER_TO_NUM_DEN rbx, rax, rbx
++  dec rcx
++.loop:
++  push rcx
++  mov rdx, arg_count
++  sub rdx, rcx
++  mov rdi, An(rdx)
++  mov rdi, [rdi]
++  mov rsi, rdi
++  TYPE rsi
++  cmp rsi, T_INTEGER
++  je .loop_cont
++  cmp rsi, T_FRACTION
++  jne .end
++.loop_cont:
++  NUMBER_TO_NUM_DEN rdi, rsi, rdi
++  push rdi
++  push rsi
++  push rbx
++  push rax
++  mov rdi, [rsp + 8]
++  mov rsi, [rsp + 8 * 2]
++  call c_multiply
++
++  mov rbx, rax
++  mov rdi, [rsp]
++  mov rsi, [rsp + 8 * 3]
++  call c_multiply
++
++  add rsp, 8 * 4
++  cmp rax, rbx
++  jge .false
++
++  mov rax, [rsp - 8 * 2]
++  mov rbx, [rsp - 8]
++  pop rcx
++  dec rcx
++  jnz .loop
++
++.true:
++  lea rax, [SobTrue]
++  jmp .end
++.false:
++  lea rax, [SobFalse]
++.end:
++  leave
++  ret
++
++prim_greater_than:
++  push rbp
++  mov rbp, rsp
++
++  mov rcx, arg_count
++  cmp rcx, 0
++  je .false
++  cmp rcx, 1
++  je .true
++  mov rbx, A0
++  mov rbx, [rbx]
++  NUMBER_TO_NUM_DEN rbx, rax, rbx
++  dec rcx
++.loop:
++  push rcx
++  mov rdx, arg_count
++  sub rdx, rcx
++  mov rdi, An(rdx)
++  mov rdi, [rdi]
++  mov rsi, rdi
++  TYPE rsi
++  cmp rsi, T_INTEGER
++  je .loop_cont
++  cmp rsi, T_FRACTION
++  jne .end
++.loop_cont:
++  NUMBER_TO_NUM_DEN rdi, rsi, rdi
++  push rdi
++  push rsi
++  push rbx
++  push rax
++  mov rdi, [rsp + 8]
++  mov rsi, [rsp + 8 * 2]
++  call c_multiply
++
++  mov rbx, rax
++  mov rdi, [rsp]
++  mov rsi, [rsp + 8 * 3]
++  call c_multiply
++
++  add rsp, 8 * 4
++  cmp rax, rbx
++  jle .false
++
++  mov rax, [rsp - 8 * 2]
++  mov rbx, [rsp - 8]
++  pop rcx
++  dec rcx
++  jnz .loop
++
++.true:
++  lea rax, [SobTrue]
++  jmp .end
++.false:
++  lea rax, [SobFalse]
++.end:
++  leave
++  ret
++
++prim_add:
++  push rbp
++  mov rbp, rsp
++
++  xor rax, rax
++  xor rbx, rbx
++  mov rcx, arg_count
++  cmp rcx, 0
++  je .int
++  NUMBER_TO_NUM_DEN rbx, rax, rbx
++.loop:
++  push rcx
++  mov rdx, arg_count
++  sub rdx, rcx
++  mov rdi, An(rdx)
++  mov rdi, [rdi]
++  mov rsi, rdi
++  TYPE rsi
++  cmp rsi, T_INTEGER
++  je .loop_cont
++  cmp rsi, T_FRACTION
++  jne .end
++.loop_cont:
++  NUMBER_TO_NUM_DEN rdi, rsi, rdi
++  push rdi
++  push rsi
++  push rbx
++  push rax
++  mov rdi, [rsp + 8 * 1]
++  mov rsi, [rsp + 8 * 3]
++  call c_multiply
++
++  mov rbx, rax
++  mov rdi, [rsp]
++  mov rsi, [rsp + 8 * 1]
++  mov rdx, [rsp + 8 * 2]
++  mov rcx, [rsp + 8 * 3]
++  call c_add_numerator
++  
++  add rsp, 8 * 4
++  pop rcx
++  dec rcx
++  jnz .loop
++
++.loop_end:
++  push rbx
++  push rax
++  mov rdi, rax
++  mov rsi, rbx
++  call c_gcd
++
++  push rax
++  mov rdi, [rsp + 8]
++  mov rsi, [rsp]
++  call c_divide
++
++  push rax
++  mov rdi, [rsp + 8 * 3]
++  mov rsi, [rsp + 8]
++  call c_divide
++
++  mov rbx, rax
++  pop rax
++  add rsp, 8 * 3
++  cmp rbx, 1
++  je .int
++  cmp rbx, -1
++  je .int
++  cmp rbx, 0
++  jl .negative_fraction
++  MAKE_LITERAL_FRACTION_2 rax, rbx
++  MAKE_POINTER rax
++  jmp .end
++.negative_fraction:
++  neg rax
++  neg rbx
++  MAKE_LITERAL_FRACTION_2 rax, rbx
++  MAKE_POINTER rax
++  jmp .end
++.int:
++  MAKE_LITERAL_FROM_REG T_INTEGER, rax
++  MAKE_POINTER rax
++.end:
++  leave
++  ret
++
++prim_mul:
++  push rbp
++  mov rbp, rsp
++
++  mov rax, 1
++  mov rbx, rax
++  mov rcx, arg_count
++  cmp rcx, 0
++  je .int
++  
++.loop:
++  push rcx
++  mov rdx, arg_count
++  sub rdx, rcx
++  mov rdi, An(rdx)
++  mov rdi, [rdi]
++  mov rsi, rdi
++  TYPE rsi
++  cmp rsi, T_INTEGER
++  je .loop_cont
++  cmp rsi, T_FRACTION
++  jne .end
++.loop_cont:
++  NUMBER_TO_NUM_DEN rdi, rsi, rdi
++  push rdi
++  push rsi
++  push rbx
++  push rax
++  mov rdi, [rsp + 8 * 1]
++  mov rsi, [rsp + 8 * 3]
++  call c_multiply
++
++  mov rbx, rax
++  mov rdi, [rsp]
++  mov rsi, [rsp + 8 * 2]
++  call c_multiply
++
++  add rsp, 8 * 4
++  pop rcx
++  dec rcx
++  jnz .loop
++
++.loop_end:
++  push rbx
++  push rax
++  mov rdi, rax
++  mov rsi, rbx
++  call c_gcd
++
++  push rax
++  mov rdi, [rsp + 8]
++  mov rsi, [rsp]
++  call c_divide
++
++  push rax
++  mov rdi, [rsp + 8 * 3]
++  mov rsi, [rsp + 8]
++  call c_divide
++
++  mov rbx, rax
++  pop rax
++  add rsp, 8 * 3
++  cmp rbx, 1
++  je .int
++  cmp rbx, -1
++  je .negative_int
++  cmp rbx, 0
++  jge .fraction
++  neg rax
++  neg rbx
++.fraction:
++  MAKE_LITERAL_FRACTION_2 rax, rbx
++  MAKE_POINTER rax
++  jmp .end
++.negative_int:
++  neg rax
++.int:
++  MAKE_LITERAL_FROM_REG T_INTEGER, rax
++  MAKE_POINTER rax
++.end:
++  leave
++  ret
++
++
++; TODO: division
++prim_div:
++  push rbp
++  mov rbp, rsp
++
++  mov rax, 1
++  mov rbx, rax
++  mov rcx, arg_count
++  cmp rcx, 1
++  jl .int
++  cmp rcx, 1
++  je .loop
++  mov rbx, A0
++  mov rbx, [rbx]
++  NUMBER_TO_NUM_DEN rbx, rax, rbx
++  dec rcx
++  
++.loop:
++  push rcx
++  mov rdx, arg_count
++  sub rdx, rcx
++  mov rdi, An(rdx)
++  mov rdi, [rdi]
++  mov rsi, rdi
++  TYPE rsi
++  cmp rsi, T_INTEGER
++  je .loop_cont
++  cmp rsi, T_FRACTION
++  jne .end
++.loop_cont:
++  NUMBER_TO_NUM_DEN rdi, rsi, rdi
++  push rdi
++  push rsi
++  push rbx
++  push rax
++  mov rdi, [rsp + 8]
++  mov rsi, [rsp + 8 * 2]
++  call c_multiply
++
++  mov rbx, rax
++  mov rdi, [rsp]
++  mov rsi, [rsp + 8 * 3]
++  call c_multiply
++
++  add rsp, 8 * 4
++  pop rcx
++  dec rcx
++  jnz .loop
++
++.loop_end:
++  push rbx
++  push rax
++  mov rdi, rax
++  mov rsi, rbx
++  call c_gcd
++
++  push rax
++  mov rdi, [rsp + 8]
++  mov rsi, [rsp]
++  call c_divide
++
++  push rax
++  mov rdi, [rsp + 8 * 3]
++  mov rsi, [rsp + 8]
++  call c_divide
++
++  mov rbx, rax
++  pop rax
++  add rsp, 8 * 3
++  cmp rbx, 1
++  je .int
++  cmp rbx, -1
++  je .negative_int
++  cmp rbx, 0
++  jge .fraction
++  neg rax
++  neg rbx
++.fraction:
++  MAKE_LITERAL_FRACTION_2 rax, rbx
++  MAKE_POINTER rax
++  jmp .end
++.negative_int:
++  neg rax
++.int:
++  MAKE_LITERAL_FROM_REG T_INTEGER, rax
++  MAKE_POINTER rax
++.end:
++  leave
++  ret
++
++prim_eq:
++  push rbp
++  mov rbp, rsp
++
++  cmp arg_count, 2
++  jne .false
++
++  mov rax, A0
++  mov rbx, A1
++
++  cmp rax, rbx
++  je .true
++
++  mov rcx, [rax]
++  TYPE rcx
++  cmp rcx, T_SYMBOL
++  jne .not_sym
++  mov rcx, [rbx]
++  TYPE rcx
++  cmp rcx, T_SYMBOL
++  jne .not_sym
++
++  mov rsi, [rax]
++  mov rdi, [rbx]
++  mov rax, rsi
++  mov rbx, rdi
++  STRING_LENGTH rax
++  STRING_LENGTH rbx
++  cmp rax, rbx
++  jne .false
++  mov rcx, rax
++  STRING_ELEMENTS rsi
++  STRING_ELEMENTS rdi
++  xor rax, rax
++  xor rbx, rbx
++.str_cmp_loop:
++  mov al, [rsi + (rcx - 1)]
++  mov bl, [rdi + (rcx - 1)]
++  cmp al, bl
++  jne .false
++  loop .str_cmp_loop
++
++  jmp .true
++
++.not_sym:
++  mov rcx, [rax]
++  TYPE rcx
++  mov rdx, [rbx]
++  TYPE rdx
++  cmp rcx, rdx
++  jne .false
++  cmp rcx, T_PAIR
++  je .false
++  mov rax, [rax]
++  mov rbx, [rbx]
++  cmp rax, rbx
++  jne .false
++
++.true:
++  lea rax, [SobTrue]
++  jmp .end
++.false:
++  lea rax, [SobFalse]
++.end:
++  leave
++  ret
++
++section .data
++.fmt_ptr: db "%p", 10, 0
++
++prim_boolean:
++  push rbp
++  mov rbp, rsp
++
++  PRIM_TYPE_PRED T_BOOL
++
++  leave
++  ret
++
++prim_char:
++  push rbp
++  mov rbp, rsp
++
++  PRIM_TYPE_PRED T_CHAR
++
++  leave
++  ret
++
++prim_procedure:
++  push rbp
++  mov rbp, rsp
++
++  PRIM_TYPE_PRED T_CLOSURE
++
++  leave
++  ret
++
++prim_integer:
++  push rbp
++  mov rbp, rsp
++
++  PRIM_TYPE_PRED T_INTEGER
++
++  leave
++  ret
++
++prim_rational:
++  push rbp
++  mov rbp, rsp
++
++  PRIM_TYPE_PRED T_INTEGER
++  cmp rax, qword SobTrue
++  je .end
++  PRIM_TYPE_PRED T_FRACTION
++.end:
++  leave
++  ret
++
++prim_pair:
++  push rbp
++  mov rbp, rsp
++
++  PRIM_TYPE_PRED T_PAIR
++
++  leave
++  ret
++
++prim_string:
++  push rbp
++  mov rbp, rsp
++
++  PRIM_TYPE_PRED T_STRING
++
++  leave
++  ret
++
++prim_symbol:
++  push rbp
++  mov rbp, rsp
++
++  PRIM_TYPE_PRED T_SYMBOL
++
++  leave
++  ret
++
++prim_vector_q:
++  push rbp
++  mov rbp, rsp
++
++  PRIM_TYPE_PRED T_VECTOR
++
++  leave
++  ret
++
++prim_integer_to_char:
++  push rbp
++  mov rbp, rsp
++
++  cmp arg_count, 1
++  jne .error
++  mov rax, A0
++  mov rax, [rax]
++  mov rbx, rax
++  TYPE rbx
++  cmp rbx, T_INTEGER
++  jne .error
++  mov rbx, rax
++  DATA rbx
++  cmp rbx, 0
++  jl .error
++
++  xor rax, T_CHAR ^ T_INTEGER
++  MAKE_POINTER rax
++  jmp .end
++
++.error:
++  lea rax, [SobVoid]
++.end:
++  leave
++  ret
++
++prim_char_to_integer:
++  push rbp
++  mov rbp, rsp
++
++  cmp arg_count, 1
++  jne .error
++  mov rax, A0
++  mov rax, [rax]
++  mov rbx, rax
++  TYPE rbx
++  cmp rbx, T_CHAR
++  jne .error
++  mov rbx, rax
++  DATA rbx
++  cmp rbx, 0
++  jl .error
++
++  xor rax, T_INTEGER ^ T_CHAR
++  MAKE_POINTER rax
++  jmp .end
++
++.error:
++  lea rax, [SobVoid]
++.end:
++  leave
++  ret
++
++prim_remainder:
++  push rbp
++  mov rbp, rsp
++
++  cmp arg_count, 2
++  jne .error
++  mov rax, A0
++  mov rax, [rax]
++  mov rbx, rax
++  TYPE rbx
++  cmp rbx, T_INTEGER
++  jne .error
++  mov rax, A1
++  mov rax, [rax]
++  mov rbx, rax
++  TYPE rbx
++  cmp rbx, T_INTEGER
++  jne .error
++
++  xor rax, rax
++  mov rsi, A1
++  mov rsi, [rsi]
++  DATA rsi
++  mov rdi, A0
++  mov rdi, [rdi]
++  DATA rdi
++  call c_remainder
++  MAKE_LITERAL_FROM_REG T_INTEGER, rax
++  MAKE_POINTER rax
++  jmp .end
++
++.error:
++  lea rax, [SobVoid]
++.end:
++  leave
++  ret
++
++prim_numerator:
++  push rbp
++  mov rbp, rsp
++
++  cmp arg_count, 1
++  jne .error
++  mov rax, A0
++  mov rax, [rax]
++  mov rbx, rax
++  TYPE rbx
++  cmp rbx, T_FRACTION
++  jne .integer
++
++  DATA_UPPER_FRACTION rax
++  MAKE_LITERAL_FROM_REG T_INTEGER, rax
++  MAKE_POINTER rax
++  jmp .end
++
++.integer:
++  mov rbx, rax
++  TYPE rbx
++  cmp rbx, T_INTEGER
++  jne .error
++  MAKE_POINTER rax
++  jmp .end
++
++.error:
++  lea rax, [SobVoid]
++.end:
++  leave
++  ret
++
++prim_denominator:
++  push rbp
++  mov rbp, rsp
++
++  cmp arg_count, 1
++  jne .error
++  mov rax, A0
++  mov rax, [rax]
++  mov rbx, rax
++  TYPE rbx
++  cmp rbx, T_FRACTION
++  jne .integer
++
++  DATA_LOWER_FRACTION rax
++  MAKE_LITERAL_FROM_REG T_INTEGER, rax
++  MAKE_POINTER rax
++  jmp .end
++
++.integer:
++  mov rbx, rax
++  TYPE rbx
++  cmp rbx, T_INTEGER
++  jne .error
++  mov rax, MAKE_LITERAL(T_INTEGER, 1)
++  MAKE_POINTER rax
++  jmp .end
++
++.error:
++  lea rax, [SobVoid]
++.end:
++  leave
++  ret
++
++prim_not:
++  push rbp
++  mov rbp, rsp
++
++  cmp arg_count, 1
++  jne .false
++  mov rax, A0
++  cmp rax, qword SobFalse
++  jne .false
++  lea rax, [SobTrue]
++  jmp .end
++
++.false:
++  lea rax, [SobFalse]
++.end:
++  leave
++  ret
++
++prim_string_length:
++  push rbp
++  mov rbp, rsp
++
++  cmp arg_count, 1
++  jne .error
++  mov rax, A0
++  mov rax, [rax]
++  mov rbx, rax
++  TYPE rbx
++  cmp rbx, T_STRING
++  jne .error
++
++  STRING_LENGTH rax
++  MAKE_LITERAL_FROM_REG T_INTEGER, rax
++  MAKE_POINTER rax
++  jmp .end
++
++.error:
++  lea rax, [SobVoid]
++.end:
++  leave
++  ret
++
++prim_string_ref:
++  push rbp
++  mov rbp, rsp
++
++  cmp arg_count, 2
++  jne .error
++  mov rax, A0
++  mov rax, [rax]
++  mov rbx, rax
++  TYPE rbx
++  cmp rbx, T_STRING
++  jne .error
++  mov rax, A1
++  mov rax, [rax]
++  mov rbx, rax
++  TYPE rbx
++  cmp rbx, T_INTEGER
++  jne .error
++
++  mov rbx, rax
++  DATA rbx
++  mov rax, A0
++  mov rax, [rax]
++  STRING_ELEMENTS rax
++  mov rax, [rax + rbx]
++  and rax, 0xFF
++  MAKE_LITERAL_FROM_REG T_CHAR, rax
++  MAKE_POINTER rax
++  jmp .end
++
++.error:
++  lea rax, [SobVoid]
++.end:
++  leave
++  ret
++
++prim_string_set:
++  push rbp
++  mov rbp, rsp
++
++  cmp arg_count, 3
++  jne .end
++  mov rax, A0
++  mov rax, [rax]
++  mov rbx, rax
++  TYPE rbx
++  cmp rbx, T_STRING
++  jne .end
++  mov rax, A1
++  mov rax, [rax]
++  mov rbx, rax
++  TYPE rbx
++  cmp rbx, T_INTEGER
++  jne .end
++  mov rax, A2
++  mov rax, [rax]
++  mov rbx, rax
++  TYPE rbx
++  cmp rbx, T_CHAR
++  jne .end
++
++  mov rcx, rax
++  DATA rcx
++  mov rbx, A1
++  mov rbx, [rbx]
++  DATA rbx
++  mov rax, A0
++  mov rax, [rax]
++  STRING_ELEMENTS rax
++  mov [rax + rbx], cl
++
++.end:
++  lea rax, [SobVoid]
++  leave
++  ret
++
++prim_make_string:
++  push rbp
++  mov rbp, rsp
++
++  cmp arg_count, 3
++  jge .error
++  cmp arg_count, 1
++  jl .error
++  mov rax, A0
++  mov rax, [rax]
++  mov rbx, rax
++  TYPE rbx
++  cmp rbx, T_INTEGER
++  jne .error
++  cmp arg_count, 2
++  jl .cont
++  mov rax, A1
++  mov rax, [rax]
++  mov rbx, rax
++  TYPE rbx
++  cmp rbx, T_CHAR
++  jne .error
++  
++.cont:
++  mov rbx, A0
++  mov rbx, [rbx]
++  DATA rbx
++  push rbx
++  MY_MALLOC rbx
++  mov rbx, rax
++  pop rcx
++
++  mov rax, rcx
++  shl rax, ((WORD_SIZE - TYPE_BITS) >> 1)
++
++  mov rdx, rbx
++  sub rdx, start_of_data
++  or rax, rdx
++  shl rax, TYPE_BITS
++  or rax, T_STRING
++
++  cmp rcx, 0
++  je .loop_end
++  xor rdx, rdx
++  cmp arg_count, 2
++  jl .loop
++  mov rdx, A1
++  mov rdx, [rdx]
++  DATA rdx
++
++.loop:
++  mov [rbx + rcx - 1], dl
++  loop .loop
++.loop_end:
++  MAKE_POINTER rax
++  jmp .end
++
++.error:
++  lea rax, [SobVoid]
++.end:
++  leave
++  ret
++
++prim_vector:
++  push rbp
++  mov rbp, rsp
++
++  mov rcx, arg_count
++  push rcx
++  shl rcx, 3
++  MY_MALLOC rcx
++  mov rbx, rax
++  pop rcx
++  
++  mov rax, rcx
++  shl rax, ((WORD_SIZE - TYPE_BITS) >> 1)
++
++  mov rdx, rbx
++  sub rdx, start_of_data
++  or rax, rdx
++  shl rax, TYPE_BITS
++  or rax, T_VECTOR
++
++  cmp rcx, 0
++  je .loop_end
++  xor rcx, rcx
++
++.loop:
++  cmp rcx, arg_count
++  je .loop_end
++  mov rdx, An(rcx)
++  mov [rbx + 8 * rcx], rdx
++  inc rcx
++  jmp .loop
++.loop_end:
++  MAKE_POINTER rax
++  jmp .end
++
++.error:
++  lea rax, [SobVoid]
++.end:
++  leave
++  ret
++
++prim_vector_length:
++  push rbp
++  mov rbp, rsp
++
++  cmp arg_count, 1
++  jne .error
++  mov rax, A0
++  mov rax, [rax]
++  mov rbx, rax
++  TYPE rbx
++  cmp rbx, T_VECTOR
++  jne .error
++
++  VECTOR_LENGTH rax
++  MAKE_LITERAL_FROM_REG T_INTEGER, rax
++  MAKE_POINTER rax
++  jmp .end
++
++.error:
++  lea rax, [SobVoid]
++.end:
++  leave
++  ret
++
++prim_vector_ref:
++  push rbp
++  mov rbp, rsp
++
++  cmp arg_count, 2
++  jne .error
++  mov rax, A0
++  mov rax, [rax]
++  mov rbx, rax
++  TYPE rbx
++  cmp rbx, T_VECTOR
++  jne .error
++  mov rax, A1
++  mov rax, [rax]
++  mov rbx, rax
++  TYPE rbx
++  cmp rbx, T_INTEGER
++  jne .error
++
++  mov rbx, rax
++  DATA rbx
++  mov rax, A0
++  mov rax, [rax]
++  VECTOR_ELEMENTS rax
++  mov rax, [rax + 8 * rbx]
++  jmp .end
++
++.error:
++  lea rax, [SobVoid]
++.end:
++  leave
++  ret
++
++prim_vector_set:
++  push rbp
++  mov rbp, rsp
++
++  cmp arg_count, 3
++  jne .end
++  mov rax, A0
++  mov rax, [rax]
++  mov rbx, rax
++  TYPE rbx
++  cmp rbx, T_VECTOR
++  jne .end
++  mov rax, A1
++  mov rax, [rax]
++  mov rbx, rax
++  TYPE rbx
++  cmp rbx, T_INTEGER
++  jne .end
++
++  mov rcx, A2  
++  mov rbx, rax
++  DATA rbx
++  mov rax, A0
++  mov rax, [rax]
++  VECTOR_ELEMENTS rax
++  mov [rax + 8 * rbx], rcx
++
++.end:
++  lea rax, [SobVoid]
++  leave
++  ret
++
++prim_make_vector:
++  push rbp
++  mov rbp, rsp
++
++  cmp arg_count, 3
++  jge .error
++  cmp arg_count, 1
++  jl .error
++  mov rax, A0
++  mov rax, [rax]
++  mov rbx, rax
++  TYPE rbx
++  cmp rbx, T_INTEGER
++  jne .error
++
++  mov rbx, A0
++  mov rbx, [rbx]
++  DATA rbx
++  push rbx
++  shl rbx, 3
++  MY_MALLOC rbx
++  mov rbx, rax
++  pop rcx
++
++  mov rax, rcx
++  shl rax, ((WORD_SIZE - TYPE_BITS) >> 1)
++
++  mov rdx, rbx
++  sub rdx, start_of_data
++  or rax, rdx
++  shl rax, TYPE_BITS
++  or rax, T_VECTOR
++
++  cmp rcx, 0
++  je .loop_end
++  lea rdx, [SobZero]
++  cmp arg_count, 2
++  jl .loop
++  mov rdx, A1
++
++.loop:
++  mov [rbx + 8 * (rcx - 1)], rdx
++  loop .loop
++.loop_end:
++  MAKE_POINTER rax
++  jmp .end
++
++.error:
++  lea rax, [SobVoid]
++.end:
++  leave
++  ret
++
++prim_apply:
++  push rbp
++  mov rbp, rsp
++
++  cmp arg_count, 2
++  jne .error
++  mov rax, A0
++  mov rax, [rax]
++  TYPE rax
++  cmp rax, T_CLOSURE
++  jne .error
++  mov rax, A1
++  mov rax, [rax]
++  TYPE rax
++  cmp rax, T_PAIR
++  je .cont
++  cmp rax, T_NIL
++  jne .error
++
++.cont:
++  mov rsi, A0
++  mov rdi, A1
++
++  PAIR_LENGTH rdi
++  shl rax, 3
++  sub rsp, rax
++  add rsp, 8 * 3
++
++  PAIR_LENGTH rdi
++  mov rcx, rax
++  mov rax, ret_addr
++  mov rbx, [rsi]
++  CLOSURE_ENV rbx
++  mov rbp, old_rbp
++  mov [rsp], rax
++  mov [rsp + 8 * 1], rbx
++  mov [rsp + 8 * 2], rcx
++
++  xor rcx, rcx
++.loop:
++  cmp rdi, qword SobNil
++  je .end
++  mov rdi, [rdi]
++  mov rax, rdi
++  CAR rax
++  mov [rsp + 8 * (3 + rcx)], rax
++  inc rcx
++  CDR rdi
++  jmp .loop
++.end:
++  mov rsi, [rsi]
++  CLOSURE_CODE rsi
++  jmp rsi
++.error:
++  lea rax, [SobVoid]
++  leave
++  ret
++
++prim_symbol_to_string:
++  push rbp
++  mov rbp, rsp
++
++  cmp arg_count, 1
++  jne .error
++  mov rax, A0
++  mov rax, [rax]
++  mov rbx, rax
++  TYPE rbx
++  cmp rbx, T_SYMBOL
++  jne .error
++
++  xor rax, T_STRING ^ T_SYMBOL
++  MAKE_POINTER rax
++  jmp .end
++
++.error:
++  lea rax, [SobVoid]
++.end:
++  leave
++  ret
++
++prim_string_to_symbol:
++  push rbp
++  mov rbp, rsp
++
++  cmp arg_count, 1
++  jne .error
++  mov rax, A0
++  mov rax, [rax]
++  mov rbx, rax
++  TYPE rbx
++  cmp rbx, T_STRING
++  jne .error
++
++  xor rax, T_SYMBOL ^ T_STRING
++  MAKE_POINTER rax
++  jmp .end
++
++.error:
++  lea rax, [SobVoid]
++.end:
++  leave
++  ret
++
++write_sob_undefined:
++  push rbp
++  mov rbp, rsp
++
++  mov rax, 0
++  mov rdi, .undefined
++  call printf
++
++  leave
++  ret
++
++section .data
++.undefined:
++  db "#<undefined>", 0
++
++write_sob_integer:
++  push rbp
++  mov rbp, rsp
++
++  mov rsi, qword [rbp + 8 + 1*8]
++  sar rsi, TYPE_BITS
++  mov rdi, .int_format_string
++  mov rax, 0
++  call printf
++
++  leave
++  ret
++
++section .data
++.int_format_string:
++  db "%ld", 0
++
++write_sob_char:
++  push rbp
++  mov rbp, rsp
++
++  mov rsi, qword [rbp + 8 + 1*8]
++  DATA rsi
++
++  cmp rsi, CHAR_NUL
++  je .Lnul
++
++  cmp rsi, CHAR_TAB
++  je .Ltab
++
++  cmp rsi, CHAR_NEWLINE
++  je .Lnewline
++
++  cmp rsi, CHAR_PAGE
++  je .Lpage
++
++  cmp rsi, CHAR_RETURN
++  je .Lreturn
++
++  cmp rsi, CHAR_SPACE
++  je .Lspace
++  jg .Lregular
++
++  mov rdi, .special
++  jmp .done  
++
++.Lnul:
++  mov rdi, .nul
++  jmp .done
++
++.Ltab:
++  mov rdi, .tab
++  jmp .done
++
++.Lnewline:
++  mov rdi, .newline
++  jmp .done
++
++.Lpage:
++  mov rdi, .page
++  jmp .done
++
++.Lreturn:
++  mov rdi, .return
++  jmp .done
++
++.Lspace:
++  mov rdi, .space
++  jmp .done
++
++.Lregular:
++  mov rdi, .regular
++  jmp .done
++
++.done:
++  mov rax, 0
++  call printf
++
++  leave
++  ret
++
++section .data
++.space:
++  db "#\space", 0
++.newline:
++  db "#\newline", 0
++.return:
++  db "#\return", 0
++.tab:
++  db "#\tab", 0
++.page:
++  db "#\page", 0
++.nul:
++  db "#\nul", 0
++.special:
++  db "#\x%01x", 0
++.regular:
++  db "#\%c", 0
++
++write_sob_void:
++  push rbp
++  mov rbp, rsp
++
++  mov rax, 0
++  mov rdi, .void
++  call printf
++
++  leave
++  ret
++
++section .data
++.void:
++  db "#<void>", 0
++  
++write_sob_bool:
++  push rbp
++  mov rbp, rsp
++
++  mov rax, qword [rbp + 8 + 1*8]
++  cmp rax, SOB_FALSE
++  je .sobFalse
++  
++  mov rdi, .true
++  jmp .continue
++
++.sobFalse:
++  mov rdi, .false
++
++.continue:
++  mov rax, 0
++  call printf  
++
++  leave
++  ret
++
++section .data      
++.false:
++  db "#f", 0
++.true:
++  db "#t", 0
++
++write_sob_nil:
++  push rbp
++  mov rbp, rsp
++
++  mov rax, 0
++  mov rdi, .nil
++  call printf
++
++  leave
++  ret
++
++section .data
++.nil:
++  db "()", 0
++
++write_sob_string:
++  push rbp
++  mov rbp, rsp
++
++  mov rax, 0
++  mov rdi, .double_quote
++  call printf
++
++  mov rax, qword [rbp + 8 + 1*8]
++  mov rcx, rax
++  STRING_LENGTH rcx
++  STRING_ELEMENTS rax
++
++.loop:
++  cmp rcx, 0
++  je .done
++  mov bl, byte [rax]
++  and rbx, 0xff
++
++  cmp rbx, CHAR_TAB
++  je .ch_tab
++  cmp rbx, CHAR_NEWLINE
++  je .ch_newline
++  cmp rbx, CHAR_PAGE
++  je .ch_page
++  cmp rbx, CHAR_RETURN
++  je .ch_return
++  cmp rbx, CHAR_SPACE
++  jl .ch_hex
++  
++  mov rdi, .fs_simple_char
++  mov rsi, rbx
++  jmp .printf
++  
++.ch_hex:
++  mov rdi, .fs_hex_char
++  mov rsi, rbx
++  jmp .printf
++  
++.ch_tab:
++  mov rdi, .fs_tab
++  mov rsi, rbx
++  jmp .printf
++  
++.ch_page:
++  mov rdi, .fs_page
++  mov rsi, rbx
++  jmp .printf
++  
++.ch_return:
++  mov rdi, .fs_return
++  mov rsi, rbx
++  jmp .printf
++
++.ch_newline:
++  mov rdi, .fs_newline
++  mov rsi, rbx
++
++.printf:
++  push rax
++  push rcx
++  mov rax, 0
++  call printf
++  pop rcx
++  pop rax
++
++  dec rcx
++  inc rax
++  jmp .loop
++
++.done:
++  mov rax, 0
++  mov rdi, .double_quote
++  call printf
++
++  leave
++  ret
++section .data
++.double_quote:
++  db '"', 0
++.fs_simple_char:
++  db "%c", 0
++.fs_hex_char:
++  db "\x%01x;", 0  
++.fs_tab:
++  db "\t", 0
++.fs_page:
++  db "\f", 0
++.fs_return:
++  db "\r", 0
++.fs_newline:
++  db "\n", 0
++
++write_sob_pair:
++  push rbp
++  mov rbp, rsp
++
++  mov rax, 0
++  mov rdi, .open_paren
++  call printf
++  mov rax, qword [rbp + 8 + 1*8]
++  CAR rax
++  push qword [rax]
++  call write_sob
++  add rsp, 1*8
++  mov rax, qword [rbp + 8 + 1*8]
++  CDR rax
++  push qword [rax]
++  call write_sob_pair_on_cdr
++  add rsp, 1*8
++  mov rdi, .close_paren
++  mov rax, 0
++  call printf
++
++  leave
++  ret
++
++section .data
++.open_paren:
++  db "(", 0
++.close_paren:
++  db ")", 0
++
++write_sob_pair_on_cdr:
++  push rbp
++  mov rbp, rsp
++
++  mov rbx, qword [rbp + 8 + 1*8]
++  mov rax, rbx
++  TYPE rbx
++  cmp rbx, T_NIL
++  je .done
++  cmp rbx, T_PAIR
++  je .cdrIsPair
++  push rax
++  mov rax, 0
++  mov rdi, .dot
++  call printf
++  call write_sob
++  add rsp, 1*8
++  jmp .done
++
++.cdrIsPair:
++  mov rbx, rax
++  CDR rbx
++  push qword [rbx]
++  CAR rax
++  push qword [rax]
++  mov rax, 0
++  mov rdi, .space
++  call printf
++  call write_sob
++  add rsp, 1*8
++  call write_sob_pair_on_cdr
++  add rsp, 1*8
++
++.done:
++  leave
++  ret
++
++section .data
++.space:
++  db " ", 0
++.dot:
++  db " . ", 0
++
++write_sob_vector:
++  push rbp
++  mov rbp, rsp
++
++  mov rax, 0
++  mov rdi, .fs_open_vector
++  call printf
++
++  mov rax, qword [rbp + 8 + 1*8]
++  mov rcx, rax
++  VECTOR_LENGTH rcx
++  cmp rcx, 0
++  je .done
++  VECTOR_ELEMENTS rax
++
++  push rcx
++  push rax
++  mov rax, qword [rax]
++  push qword [rax]
++  call write_sob
++  add rsp, 1*8
++  pop rax
++  pop rcx
++  dec rcx
++  add rax, 8
++
++.loop:
++  cmp rcx, 0
++  je .done
++
++  push rcx
++  push rax
++  mov rax, 0
++  mov rdi, .fs_space
++  call printf
++  
++  pop rax
++  push rax
++  mov rax, qword [rax]
++  push qword [rax]
++  call write_sob
++  add rsp, 1*8
++  pop rax
++  pop rcx
++  dec rcx
++  add rax, 8
++  jmp .loop
++
++.done:
++  mov rax, 0
++  mov rdi, .fs_close_vector
++  call printf
++
++  leave
++  ret
++
++section  .data
++.fs_open_vector:
++  db "#(", 0
++.fs_close_vector:
++  db ")", 0
++.fs_space:
++  db " ", 0
++
++write_sob_symbol:
++  push rbp
++  mov rbp, rsp
++
++  mov rax, qword [rbp + 8 + 1*8]
++  mov rcx, rax
++  STRING_LENGTH rcx
++  STRING_ELEMENTS rax
++
++.loop:
++  cmp rcx, 0
++  je .done
++  mov bl, byte [rax]
++  and rbx, 0xfff
++  mov rdi, .fs_simple_char
++  mov rsi, rbx
++  push rax
++  push rcx
++  mov rax, 0
++  call printf
++  pop rcx
++  pop rax
++
++  dec rcx
++  inc rax
++  jmp .loop
++
++.done:
++  leave
++  ret
++
++section .data
++.fs_simple_char:
++  db "%c", 0
++
++write_sob_fraction:
++  push rbp
++  mov rbp, rsp
++
++  mov rax, qword [rbp + 8 + 1*8]
++  mov rbx, rax
++  DATA_UPPER_FRACTION rax
++  DATA_LOWER_FRACTION rbx
++
++  mov rdx, rbx
++  mov rsi, rax
++  mov rdi, .frac_format_string
++  xor rax, rax
++  call printf
++
++  leave
++  ret
++
++section .data
++.frac_format_string:
++  db "%ld/%ld", 0
++
++write_sob_closure:
++  push rbp
++  mov rbp, rsp
++
++  mov rsi, qword [rbp + 8 + 1*8]
++  mov rdx, rsi
++  CLOSURE_ENV rsi
++  CLOSURE_CODE rdx
++  mov rdi, .closure
++  mov rax, 0
++  call printf
++
++  leave
++  ret
++section .data
++.closure:
++  db "#<closure [env:%p, code:%p]>", 0
++
++write_sob:
++  mov rax, qword [rsp + 1*8]
++  TYPE rax
++  jmp qword [.jmp_table + rax * 8]
++
++section .data
++.jmp_table:
++  dq write_sob_undefined, write_sob_void, write_sob_nil
++  dq write_sob_integer, write_sob_fraction, write_sob_bool
++  dq write_sob_char, write_sob_string, write_sob_symbol
++  dq write_sob_closure, write_sob_pair, write_sob_vector
++
++section .text
++write_sob_if_not_void:
++  mov rax, qword [rsp + 1*8]
++  mov rax, [rax]
++  cmp rax, SOB_VOID
++  je .continue
++
++  push rax
++  call write_sob
++  add rsp, 1*8
++  mov rax, 0
++  mov rdi, .newline
++  call printf
++  
++.continue:
++  ret
++section .data
++.newline:
++  db CHAR_NEWLINE, 0
++  
++  
++  
+diff --git a/util.c b/util.c
+new file mode 100644
+index 0000000..3da9022
+--- /dev/null
++++ b/util.c
+@@ -0,0 +1,25 @@
++long c_gcd(long a, long b) {
++    long c;
++    while (a) {
++      c = a;
++      a = b % a;
++      b = c;
++    }
++    return b < 0 ? (b * -1) : b;
++}
++
++long c_divide(long a, long b) {
++    return a / b;
++}
++
++long c_multiply(long a, long b) {
++    return a * b;
++}
++
++long c_remainder(long a, long b) {
++    return a % b;
++}
++
++long c_add_numerator(long an, long ad, long bn, long bd) {
++    return an * bd + bn * ad;
++}

@@ -656,7 +656,7 @@
   (lambda (code)
     (append
      (list
-      "%include 'scheme.s'"
+      "%include './project/scheme.s'"
       ""
       "section .bss"
       "malloc_pointer:"
@@ -747,7 +747,7 @@
 
 (define compile-scheme-file
   (lambda (in-file out-file)
-    (let* ((input (append (file->list "builtins.scm") (file->list in-file)))
+    (let* ((input (append (file->list "./project/builtins.scm") (file->list in-file)))
            (code (compile (pipeline input)))
            (out-port (open-output-file out-file 'replace)))
       (for-each (lambda (line) (fprintf out-port "~a\n" line))
